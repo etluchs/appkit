@@ -19,14 +19,16 @@ The active backend is chosen by ``APPKIT_BACKEND`` (``fake`` by default,
 
 from __future__ import annotations
 
-from . import auth, config, db, mail, sharepoint
+from . import auth, config, db, errors, mail, sharepoint
 from .auth import User, user
 from .config import backend, is_fake
+from .errors import AppkitError, ConfigError, GraphError
 
 __all__ = [
     "auth",
     "config",
     "db",
+    "errors",
     "mail",
     "sharepoint",
     "User",
@@ -34,6 +36,9 @@ __all__ = [
     "backend",
     "is_fake",
     "reset_fakes",
+    "AppkitError",
+    "ConfigError",
+    "GraphError",
 ]
 
 __version__ = "0.1.0"
@@ -45,7 +50,8 @@ def reset_fakes() -> None:
     Intended for test fixtures. No-op semantics are safe to call in any backend.
     """
     from . import _fake
-    from .db import _reset_fake
+    from .db import _reset_fake, _reset_pool
 
     _fake.reset()
     _reset_fake()
+    _reset_pool()

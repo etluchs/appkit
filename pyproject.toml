@@ -17,8 +17,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Cryptographic verification of the Easy Auth id token (APPKIT_AUTH=verify).
+verify = [
+    "pyjwt[crypto]>=2.8",
+]
 dev = [
     "pytest>=8",
+    "pyjwt[crypto]>=2.8",
+    "respx>=0.21",
     "ruff>=0.6",
 ]
 
