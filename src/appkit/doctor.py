@@ -1,0 +1,405 @@
+"""Check that a deployment is wired up the way it thinks it is.
+
+Run it in the container, as the app::
+
+    python -m appkit.doctor
+    python -m appkit.doctor --json                    # for a Container Apps Job
+    python -m appkit.doctor --list Requests --send-mail you@uzh.ch
+
+Every check runs independently and reports what it found, so one broken thing
+does not hide the rest. Nothing is contacted on the ``fake`` backend, and no
+token, password or connection string is ever printed.
+
+It exists because the failures that matter here are quiet ones: the wrong
+backend discards mail while returning success, a managed identity missing a
+Graph role fails only on the code path nobody exercised, and a SharePoint list
+resolves by a different name in Azure than it does locally. The doctor asks
+each of those questions out loud.
+
+Exit code is 0 if nothing failed (warnings and skips are fine), 1 otherwise.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import logging
+import platform
+import re
+import sys
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+from . import config
+
+PASS = "PASS"
+FAIL = "FAIL"
+WARN = "WARN"
+SKIP = "SKIP"
+
+
+@dataclass
+class Check:
+    """One question the doctor asked, and what came back."""
+
+    name: str
+    status: str
+    detail: str
+    notes: list[str] = field(default_factory=list)
+    hint: str = ""
+
+
+# --------------------------------------------------------------------------
+# Helpers
+# --------------------------------------------------------------------------
+
+def _token_claims(token: str) -> dict[str, Any]:
+    """Decode a JWT payload without verifying it.
+
+    This is diagnostics, not authentication: the token was just handed to us by
+    our own credential, and we only want to report what it says about itself.
+    """
+    try:
+        payload = token.split(".")[1]
+        padded = payload + "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return {}
+
+
+class _CredentialNameCapture(logging.Handler):
+    """Catch which credential in the chain actually answered.
+
+    azure-identity logs this and nothing else exposes it, so the capture is
+    best-effort: an empty result just means the report is one line shorter.
+    """
+
+    PATTERN = re.compile(r"acquired a token from (\w+)")
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.name_found = ""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        match = self.PATTERN.search(record.getMessage())
+        if match:
+            self.name_found = match.group(1)
+
+    def __enter__(self) -> _CredentialNameCapture:
+        self._logger = logging.getLogger("azure.identity")
+        self._previous = self._logger.level
+        self._logger.setLevel(logging.INFO)
+        self._logger.addHandler(self)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._logger.removeHandler(self)
+        self._logger.setLevel(self._previous)
+
+
+def _redact(value: str, keep: int = 6) -> str:
+    if not value:
+        return "(unset)"
+    return value if len(value) <= keep else f"{value[:keep]}…"
+
+
+# --------------------------------------------------------------------------
+# The checks
+# --------------------------------------------------------------------------
+
+def check_environment() -> Check:
+    notes = [f"python {platform.python_version()} on {sys.platform}"]
+    if config.on_azure_platform():
+        import os
+
+        marker = next(
+            (m for m in ("CONTAINER_APP_NAME", "WEBSITE_SITE_NAME") if os.getenv(m)), ""
+        )
+        detail = f"running on an Azure app platform ({marker}={os.getenv(marker)})"
+    else:
+        detail = "not on an Azure app platform"
+    return Check("environment", PASS, detail, notes)
+
+
+def check_backend() -> Check:
+    try:
+        active = config.backend()
+    except Exception as exc:
+        return Check("backend", FAIL, str(exc))
+
+    if active == config.AZURE:
+        return Check("backend", PASS, "azure")
+
+    if config.on_azure_platform():
+        return Check(
+            "backend",
+            WARN,
+            "fake, on an Azure app platform",
+            hint="Mail is discarded, database writes vanish on restart and "
+            "SharePoint returns seed data — all while looking like they worked. "
+            "Set APPKIT_BACKEND=azure unless this is deliberate.",
+        )
+    return Check("backend", PASS, "fake (in-memory; nothing will be contacted)")
+
+
+def check_auth() -> Check:
+    from . import auth
+
+    try:
+        active = auth.mode()
+    except Exception as exc:
+        return Check("auth", FAIL, str(exc))
+
+    if active != auth.VERIFY:
+        note = (
+            "Trusting X-MS-CLIENT-PRINCIPAL headers. This is only safe if Easy "
+            "Auth rejects unauthenticated requests."
+            if active == auth.EASYAUTH
+            else "Local dev user; refused on an Azure app platform."
+        )
+        return Check("auth", PASS, active, [note])
+
+    missing = [
+        name
+        for name in ("APPKIT_AUTH_TENANT_ID", "APPKIT_AUTH_CLIENT_ID")
+        if not config.env(name)
+    ]
+    if missing:
+        return Check("auth", FAIL, f"verify, but {', '.join(missing)} not set")
+    try:
+        import jwt  # noqa: F401
+    except ImportError:
+        return Check(
+            "auth", FAIL, "verify, but PyJWT is not installed",
+            hint="Install the extra: uv pip install 'appkit[verify]'",
+        )
+    return Check("auth", PASS, "verify (id-token signature is checked)")
+
+
+def check_credential() -> Check:
+    from ._credential import token
+    from ._graph import GRAPH_SCOPE
+
+    try:
+        with _CredentialNameCapture() as capture:
+            raw = token(GRAPH_SCOPE)
+    except Exception as exc:
+        return Check(
+            "credential", FAIL, f"{type(exc).__name__}: {exc}",
+            hint="No managed identity is available. In Azure, check the identity "
+            "is assigned to the app; locally, run `az login`.",
+        )
+
+    claims = _token_claims(raw)
+    roles = claims.get("roles") or []
+    scopes = str(claims.get("scp", "")).split()
+
+    if roles:
+        kind = "application (app-only) token"
+    elif scopes:
+        kind = "delegated token (a user is behind it)"
+    else:
+        kind = "token acquired (could not read its claims)"
+
+    detail = f"{capture.name_found} -> {kind}" if capture.name_found else kind
+    # These two get mixed up constantly: the site grant takes the client id, the
+    # Graph app-role assignment takes the object id.
+    notes = [
+        f"client id (appid) = {claims.get('appid') or claims.get('azp') or '?'}",
+        f"object id (oid)   = {claims.get('oid', '?')}",
+        f"tenant     (tid)  = {claims.get('tid', '?')}",
+    ]
+    if roles:
+        notes.append(f"Graph app roles: {', '.join(sorted(roles))}")
+    elif scopes:
+        notes.append(f"delegated scopes: {', '.join(sorted(scopes))}")
+
+    check = Check("credential", PASS, detail, notes)
+    if scopes and not roles:
+        check.hint = (
+            "A delegated token proves the Graph request shapes but not the "
+            "app-only permission model. Production uses a managed identity, "
+            "which gets `roles` instead of `scp`."
+        )
+    if not roles and not scopes:
+        check.status = WARN
+    return check
+
+
+def check_sharepoint(list_name: str | None) -> Check:
+    from . import _graph
+
+    site = config.env("APPKIT_SHAREPOINT_SITE")
+    if not site:
+        return Check("sharepoint", SKIP, "APPKIT_SHAREPOINT_SITE not set")
+
+    try:
+        info = _graph.get(f"/sites/{site}")
+    except Exception as exc:
+        return Check("sharepoint", FAIL, f"cannot read the site: {exc}")
+
+    notes = []
+    try:
+        lists = _graph.get_all(f"/sites/{site}/lists", params={"$top": 50})
+    except Exception as exc:
+        return Check(
+            "sharepoint", FAIL, f"site resolves but its lists do not: {exc}",
+            notes=[f"site: {info.get('displayName', '?')}"],
+        )
+
+    # Graph resolves /lists/{key} by id or `name`, never by display name, so
+    # report all three — this is the mismatch that breaks apps built on fakes.
+    notes.append("pass one of `name` or `id` to list_rows(), not the display name:")
+    for item in lists[:20]:
+        notes.append(
+            f"  name={item.get('name', '?')!r:<28} "
+            f"display={item.get('displayName', '?')!r:<28} id={item.get('id', '?')}"
+        )
+    if len(lists) > 20:
+        notes.append(f"  … and {len(lists) - 20} more")
+
+    detail = f"site {info.get('displayName', '?')!r}; {len(lists)} lists visible"
+
+    if list_name:
+        from . import sharepoint
+
+        try:
+            rows = sharepoint.list_rows(list_name)
+        except Exception as exc:
+            return Check(
+                "sharepoint", FAIL, f"{detail}; reading {list_name!r} failed: {exc}",
+                notes=notes,
+            )
+        detail += f"; {list_name!r} returned {len(rows)} rows"
+
+    return Check("sharepoint", PASS, detail, notes)
+
+
+def check_mail(send_to: str | None) -> Check:
+    sender = config.env("APPKIT_MAIL_SENDER")
+    if not sender:
+        return Check("mail", SKIP, "APPKIT_MAIL_SENDER not set")
+
+    if not send_to:
+        return Check(
+            "mail", SKIP, f"sender is {sender}; not verified",
+            hint="Pass --send-mail ADDRESS to actually send one and prove "
+            "Mail.Send works for this mailbox.",
+        )
+
+    from . import mail
+
+    try:
+        mail.send_mail(
+            to=send_to,
+            subject="appkit doctor",
+            body="This message was sent by `python -m appkit.doctor`.",
+        )
+    except Exception as exc:
+        return Check(
+            "mail", FAIL, f"sending as {sender} failed: {exc}",
+            hint="Mail.Send may be missing, or an Exchange ApplicationAccessPolicy "
+            "may exclude this mailbox.",
+        )
+    return Check("mail", PASS, f"sent as {sender} to {send_to}")
+
+
+def check_database() -> Check:
+    dsn = config.env("APPKIT_DB_DSN")
+    if not dsn:
+        return Check("database", SKIP, "APPKIT_DB_DSN not set")
+
+    from . import db
+
+    try:
+        row = db.query("select version() as version, current_user as who")[0]
+    except Exception as exc:
+        return Check(
+            "database", FAIL, f"{type(exc).__name__}: {exc}",
+            hint="Check the DSN host and that this identity has an AAD role on "
+            "the server. The password is a token appkit fetches per connection.",
+        )
+
+    version = str(row.get("version", "")).split(",")[0]
+    return Check("database", PASS, version, [f"connected as {row.get('who', '?')}"])
+
+
+# --------------------------------------------------------------------------
+# Runner
+# --------------------------------------------------------------------------
+
+def run(*, list_name: str | None = None, send_to: str | None = None) -> list[Check]:
+    """Run every check and return the results in report order."""
+    checks = [check_environment(), check_backend()]
+
+    if checks[-1].status == FAIL:
+        # Everything below reads the backend, so it would only repeat this error.
+        return checks
+
+    checks.append(check_auth())
+
+    if config.is_fake():
+        checks.append(
+            Check("integrations", SKIP, "fake backend: nothing was contacted")
+        )
+        return checks
+
+    checks.append(check_credential())
+    checks.append(check_sharepoint(list_name))
+    checks.append(check_mail(send_to))
+    checks.append(check_database())
+    return checks
+
+
+def format_report(checks: list[Check]) -> str:
+    lines = ["appkit doctor", "=" * 13, ""]
+    for check in checks:
+        lines.append(f"{check.status:<5} {check.name:<12} {check.detail}")
+        for note in check.notes:
+            lines.append(f"{'':<18} {note}")
+        for index, chunk in enumerate(_wrap(check.hint, 78) if check.hint else []):
+            lines.append(f"{'':<18} {'->' if index == 0 else '  '} {chunk}")
+    failed = [c.name for c in checks if c.status == FAIL]
+    lines.append("")
+    lines.append(f"{len(failed)} failed" if failed else "all checks passed")
+    return "\n".join(lines)
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    words, line, out = text.split(), "", []
+    for word in words:
+        if line and len(line) + len(word) + 1 > width:
+            out.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    if line:
+        out.append(line)
+    return out
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m appkit.doctor",
+        description="Check that this deployment is wired up the way it thinks it is.",
+    )
+    parser.add_argument("--json", action="store_true", help="emit JSON instead of a report")
+    parser.add_argument("--list", dest="list_name", help="also read rows from this list")
+    parser.add_argument(
+        "--send-mail", dest="send_to", help="actually send a test mail to this address"
+    )
+    args = parser.parse_args(argv)
+
+    checks = run(list_name=args.list_name, send_to=args.send_to)
+
+    if args.json:
+        print(json.dumps({"checks": [asdict(c) for c in checks]}, indent=2))
+    else:
+        print(format_report(checks))
+
+    return 1 if any(c.status == FAIL for c in checks) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

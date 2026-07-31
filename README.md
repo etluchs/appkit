@@ -174,6 +174,27 @@ for. Graph requests are retried with backoff on throttling (`429`, honouring
 tells us it did *not* process the request, since sending is not idempotent.
 Configuration problems raise `ConfigError`.
 
+## Checking a deployment
+
+```sh
+python -m appkit.doctor                       # or: appkit-doctor
+python -m appkit.doctor --json                # for a Container Apps Job
+python -m appkit.doctor --list requests --send-mail you@uzh.ch
+```
+
+Run it in the container, as the app. It reports the active backend and auth
+mode, which credential answered and whether its token is application or
+delegated, the Graph app roles it actually carries, the SharePoint lists it can
+see (with the `name` and `id` Graph will accept, which is *not* the display
+name), and whether the database answers. Checks run independently so one broken
+thing doesn't hide the rest, nothing is contacted on the `fake` backend, and no
+token, password or DSN is ever printed. Exit code is 1 if anything failed, so it
+works unattended as a Container Apps Job.
+
+The two ids it prints are the ones you need to grant it anything: the **client
+id** for a `Sites.Selected` site grant, the **object id** for the Graph app-role
+assignment.
+
 ## Development
 
 ```sh

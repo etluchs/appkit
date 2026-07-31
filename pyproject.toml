@@ -28,6 +28,11 @@ dev = [
     "ruff>=0.6",
 ]
 
+[project.scripts]
+# Self-check for a real deployment: `appkit-doctor` in the container, or as the
+# command of a Container Apps Job.
+appkit-doctor = "appkit.doctor:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
