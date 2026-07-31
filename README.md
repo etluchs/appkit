@@ -217,6 +217,41 @@ Azure:
 | `test_graph_contract.py`, `test_*_azure.py` | The real Graph code path: URLs, `$expand`/`$top`, pagination, retry policy, error mapping. Runs against a mocked transport with only the managed-identity token stubbed. | nothing |
 | `test_db_conformance.py` | One database suite run against **both** the fake and a real Postgres, through the real `psycopg` pool. Divergences are marked `xfail`, not hidden. | a Postgres |
 | `test_auth_verify.py` | `APPKIT_AUTH=verify` end to end: a real RSA key signs real JWTs, a real local HTTP server serves the JWKS, and forged, tampered, expired, wrong-audience and wrong-tenant tokens are all rejected. | nothing |
+| `tests/live/` | Real Graph and real Azure Postgres — see below. | Azure |
+
+#### The live suite
+
+```sh
+pytest -m live          # opt-in; excluded from a plain `pytest` run
+pytest -m soak -s       # over an hour; proves the token-refresh fix
+```
+
+It refuses to start unless `APPKIT_BACKEND=azure`, because a live run that
+quietly used the fakes is worse than no run at all. Each area skips loudly when
+its configuration is missing rather than substituting anything:
+
+| Variable | Enables |
+| --- | --- |
+| `APPKIT_SHAREPOINT_SITE` + `APPKIT_LIVE_LIST` | SharePoint reads, projection, pagination, error shapes |
+| `APPKIT_MAIL_SENDER` + `APPKIT_LIVE_MAIL_TO` | actually sending mail (opt-in — it reaches a real mailbox) |
+| `APPKIT_DB_DSN` | Postgres over an Entra token, TLS, per-connection token fetch |
+| `APPKIT_LIVE_FORBIDDEN_SITE` / `APPKIT_LIVE_FORBIDDEN_SENDER` | that `Sites.Selected` and an Exchange `ApplicationAccessPolicy` really do fence the identity in |
+
+`tests/live/test_soak.py` is the one no other layer can replace. Entra tokens
+expire after about an hour, and the pool bug this library had only appears
+*after* that — every unit test, CI job and short live run finishes inside the
+token's lifetime. The soak test deliberately outlives the token, then forces the
+pool to open a new connection and asserts it succeeds with a different token.
+
+Run both as Container Apps Jobs with `live.Dockerfile`, which starts by running
+`appkit-doctor` — if the environment is wrong, its report explains why in a way
+a test failure would not.
+
+**Still uncovered:** Easy Auth itself. It needs a browser, a login and a request
+through the platform proxy, so no job can reach it. One browser login against a
+deployed app settles the two open questions — whether Container Apps forwards
+`X-MS-TOKEN-AAD-ID-TOKEN` at all, and whether the claim names match what
+`_jwt.py` reads.
 
 ```sh
 docker run -d --name appkit-pg -p 5432:5432 \

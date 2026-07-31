@@ -2,8 +2,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def fake_backend(monkeypatch):
-    """Force the in-memory backend and reset it before every test."""
+def fake_backend(request, monkeypatch):
+    """Force the in-memory backend and reset it before every test.
+
+    Live and soak tests are exempt — forcing the fake backend on them would let
+    them report success without contacting anything.
+    """
+    if request.node.get_closest_marker("live") or request.node.get_closest_marker("soak"):
+        yield
+        return
+
     monkeypatch.setenv("APPKIT_BACKEND", "fake")
     monkeypatch.delenv("CONTAINER_APP_NAME", raising=False)
     monkeypatch.delenv("WEBSITE_SITE_NAME", raising=False)

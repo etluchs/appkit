@@ -53,4 +53,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Live and soak tests are opt-in: `pytest` must stay offline and fast. A later
+# -m on the command line replaces this, so `pytest -m live` selects them.
+addopts = "-q -m 'not live and not soak'"
+markers = [
+    "live: talks to real Microsoft Graph / Azure Postgres (needs APPKIT_BACKEND=azure)",
+    "soak: runs for over an hour to outlive an Entra token",
+]

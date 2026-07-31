@@ -136,6 +136,10 @@ def _pool():
             kwargs={"row_factory": dict_row},
             min_size=1,
             max_size=int(env("APPKIT_DB_POOL_MAX", "10")),
+            # How long a caller waits for a connection before giving up. The
+            # default matches psycopg_pool's; lower it when a request should
+            # fail fast rather than queue behind an unreachable server.
+            timeout=float(env("APPKIT_DB_POOL_TIMEOUT", "30") or 30),
             check=ConnectionPool.check_connection,
             open=True,
         )
