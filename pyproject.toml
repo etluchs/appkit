@@ -1,0 +1,45 @@
+[project]
+name = "appkit"
+version = "0.1.0"
+description = "UZH internal-app toolkit: SharePoint, mail, Postgres and Easy Auth over managed identity, with in-memory fakes for local dev."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "UZH" }]
+dependencies = [
+    # Azure-backed code paths. All are imported lazily, so the default `fake`
+    # backend runs without contacting any of them, but they are declared here
+    # so a production `uv sync` produces a ready-to-run image.
+    "azure-identity>=1.16",
+    "httpx>=0.27",
+    "psycopg[binary]>=3.1",
+    "psycopg-pool>=3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/appkit"]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
