@@ -12,8 +12,32 @@ login and injects headers on every request that reaches your container:
 object exposing a case-insensitive ``.headers`` mapping – a Starlette/FastAPI
 ``Request`` is the typical caller, but a plain dict works too.
 
-Locally (``fake`` backend, no headers present) it returns a configurable dev
-user so pages that need "who am I" render without a login round-trip.
+Trusting those headers
+----------------------
+
+**Those headers are only meaningful if a trusted proxy put them there.** Easy
+Auth strips client-supplied ``X-MS-CLIENT-PRINCIPAL*`` headers from inbound
+requests and injects its own, so behind it they are trustworthy. Any request
+path that does *not* pass through it — internal ingress, another container in
+the same environment, a port exposed directly, or Easy Auth left in "allow
+unauthenticated" mode — lets the caller set them by hand, and with them
+``has_role()``.
+
+appkit cannot detect that from inside the container, so it will not guess.
+``APPKIT_AUTH`` states how the user is established:
+
+* ``easyauth`` – trust the platform-injected headers. Requires that Easy Auth
+  is enabled and configured to **reject** unauthenticated requests.
+* ``verify``   – ignore those headers and cryptographically verify the
+  ``X-MS-TOKEN-AAD-ID-TOKEN`` JWT against the tenant's signing keys. Forged
+  headers cannot survive this. Needs Easy Auth's token store enabled and the
+  ``appkit[verify]`` extra installed.
+* ``dev``      – the local dev user (and header simulation). Refused outright
+  when running on an Azure app platform.
+
+Unset, ``APPKIT_AUTH`` follows the backend (``fake`` → ``dev``, ``azure`` →
+``easyauth``); on Container Apps or App Service it must be set explicitly, so
+that trusting a proxy is always a decision somebody made on purpose.
 """
 
 from __future__ import annotations
@@ -21,10 +45,17 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from .config import env, is_fake
+from .config import env, is_fake, on_azure_platform
+from .errors import ConfigError
+
+EASYAUTH = "easyauth"
+VERIFY = "verify"
+DEV = "dev"
+_MODES = (EASYAUTH, VERIFY, DEV)
 
 # Claim type URIs emitted by Azure AD via Easy Auth.
 _NAME_CLAIMS = (
@@ -71,6 +102,44 @@ class _HasHeaders(Protocol):
     headers: Any
 
 
+def mode() -> str:
+    """Return the active auth mode (``easyauth``, ``verify`` or ``dev``).
+
+    Raises:
+        ConfigError: if ``APPKIT_AUTH`` is unrecognised, is unset while running
+            on an Azure app platform, or asks for the dev user there.
+    """
+    raw = os.getenv("APPKIT_AUTH")
+    value = (raw or "").strip().lower()
+
+    if value and value not in _MODES:
+        raise ConfigError(
+            f"APPKIT_AUTH={raw!r} is not a valid auth mode. "
+            f"Use one of: {', '.join(_MODES)}."
+        )
+
+    if not value:
+        if on_azure_platform():
+            raise ConfigError(
+                "APPKIT_AUTH is not set, but this app is running on an Azure app "
+                "platform. Set APPKIT_AUTH=easyauth to trust the Easy Auth "
+                "headers — which is only safe if Easy Auth is enabled and set to "
+                "reject unauthenticated requests, so that no request can reach "
+                "this container carrying headers a caller chose — or "
+                "APPKIT_AUTH=verify to validate the signed id token instead."
+            )
+        value = DEV if is_fake() else EASYAUTH
+
+    if value == DEV and on_azure_platform():
+        raise ConfigError(
+            "APPKIT_AUTH=dev is refused on an Azure app platform: it would sign "
+            "every caller in as the dev user, with the roles named by "
+            "APPKIT_DEV_ROLES. Use easyauth or verify."
+        )
+
+    return value
+
+
 def user(request: _HasHeaders) -> User | None:
     """Return the signed-in :class:`User`, or ``None`` if unauthenticated.
 
@@ -79,7 +148,23 @@ def user(request: _HasHeaders) -> User | None:
             is assumed, as with Starlette/FastAPI requests).
     """
     headers = _Headers(getattr(request, "headers", request))
+    active = mode()
 
+    if active == VERIFY:
+        return _verified_user(headers)
+
+    from_headers = _from_headers(headers)
+    if from_headers is not None:
+        return from_headers
+
+    # Locally, hand back a dev user so pages render without a login.
+    if active == DEV:
+        return _dev_user()
+    return None
+
+
+def _from_headers(headers: _Headers) -> User | None:
+    """Build a user from the Easy Auth headers, trusting them as given."""
     encoded = headers.get("x-ms-client-principal")
     if encoded:
         parsed = _from_principal(encoded, headers)
@@ -96,11 +181,31 @@ def user(request: _HasHeaders) -> User | None:
             email=name if name and "@" in name else "",
             provider=idp or "",
         )
-
-    # No Easy Auth headers. Locally, hand back a dev user; in Azure, nobody.
-    if is_fake():
-        return _dev_user()
     return None
+
+
+def _verified_user(headers: _Headers) -> User | None:
+    """Build a user from the id token, and only if its signature checks out."""
+    from ._jwt import verify_id_token
+
+    raw = headers.get("x-ms-token-aad-id-token")
+    if not raw:
+        return None
+
+    claims = verify_id_token(raw)
+    if claims is None:
+        return None
+
+    name = str(claims.get("name") or claims.get("preferred_username") or "")
+    email = str(claims.get("preferred_username") or claims.get("email") or "")
+    roles = claims.get("roles") or []
+    return User(
+        id=str(claims.get("oid") or claims.get("sub") or ""),
+        name=name,
+        email=email if "@" in email else "",
+        provider="aad",
+        roles=tuple(str(r) for r in roles),
+    )
 
 
 def _from_principal(encoded: str, headers: _Headers) -> User | None:

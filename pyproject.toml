@@ -17,10 +17,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Cryptographic verification of the Easy Auth id token (APPKIT_AUTH=verify).
+verify = [
+    "pyjwt[crypto]>=2.8",
+]
 dev = [
     "pytest>=8",
+    "pyjwt[crypto]>=2.8",
+    "respx>=0.21",
     "ruff>=0.6",
 ]
+
+[project.scripts]
+# Self-check for a real deployment: `appkit-doctor` in the container, or as the
+# command of a Container Apps Job.
+appkit-doctor = "appkit.doctor:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -42,4 +53,10 @@ select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+# Live and soak tests are opt-in: `pytest` must stay offline and fast. A later
+# -m on the command line replaces this, so `pytest -m live` selects them.
+addopts = "-q -m 'not live and not soak'"
+markers = [
+    "live: talks to real Microsoft Graph / Azure Postgres (needs APPKIT_BACKEND=azure)",
+    "soak: runs for over an hour to outlive an Entra token",
+]
