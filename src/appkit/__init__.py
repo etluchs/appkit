@@ -1,6 +1,6 @@
 """appkit – the UZH internal-app toolkit.
 
-Four small modules, one job each, all authenticating with the app's **managed
+Five small modules, one job each, all authenticating with the app's **managed
 identity** in production and all backed by an in-memory fake for local dev and
 tests:
 
@@ -9,6 +9,7 @@ tests:
 * :mod:`appkit.db`          – Postgres with a pool and dict rows (psycopg)
 * :mod:`appkit.auth`        – the signed-in :class:`~appkit.auth.User`
                               from Container Apps Easy Auth headers
+* :mod:`appkit.embeddings`  – text embeddings (Azure OpenAI)
 
 Application code imports these modules. It must **never** import ``httpx`` or
 ``psycopg`` directly – appkit owns those integrations.
@@ -19,15 +20,16 @@ The active backend is chosen by ``APPKIT_BACKEND`` (``fake`` by default,
 
 from __future__ import annotations
 
-from . import auth, config, db, errors, mail, sharepoint
+from . import auth, config, db, embeddings, errors, mail, sharepoint
 from .auth import User, user
 from .config import backend, is_fake
-from .errors import AppkitError, ConfigError, GraphError
+from .errors import AppkitError, AzureOpenAIError, ConfigError, GraphError
 
 __all__ = [
     "auth",
     "config",
     "db",
+    "embeddings",
     "errors",
     "mail",
     "sharepoint",
@@ -39,6 +41,7 @@ __all__ = [
     "AppkitError",
     "ConfigError",
     "GraphError",
+    "AzureOpenAIError",
 ]
 
 __version__ = "0.1.0"

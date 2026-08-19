@@ -77,3 +77,65 @@ def _hint(status: int) -> str:
     if status == 429:
         return "Hint: Graph is throttling this app; appkit already retried."
     return ""
+
+
+class AzureOpenAIError(AppkitError):
+    """An Azure OpenAI request failed.
+
+    Same idea as :class:`GraphError`: keep the status, the service's own error
+    ``code`` and ``message``, and the request id, because the response body is
+    what says whether this was a missing role assignment, an unknown deployment
+    or a content filter.
+    """
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        url: str,
+        code: str = "",
+        message: str = "",
+        request_id: str = "",
+    ) -> None:
+        self.status = status
+        self.url = url
+        self.code = code
+        self.message = message
+        self.request_id = request_id
+        super().__init__(self._describe())
+
+    def _describe(self) -> str:
+        detail = " - ".join(part for part in (self.code, self.message) if part)
+        text = f"Azure OpenAI POST {self.url} failed: {self.status}"
+        if detail:
+            text += f" ({detail})"
+        if self.request_id:
+            text += f" [request-id: {self.request_id}]"
+        if hint := _aoai_hint(self.status, self.code):
+            text += f"\n{hint}"
+        return text
+
+
+def _aoai_hint(status: int, code: str = "") -> str:
+    if code == "SubscriptionNotRegistered":
+        return (
+            "Hint: the subscription the caller is scoped to has not registered the "
+            "Microsoft.CognitiveServices resource provider. Run "
+            "`az provider register --namespace Microsoft.CognitiveServices` on it, "
+            "or point the identity at the subscription that owns the resource."
+        )
+    if status in (401, 403):
+        return (
+            "Hint: the app's managed identity is probably missing the 'Cognitive "
+            "Services OpenAI User' role on the Azure OpenAI resource, or the token "
+            "was issued for the wrong audience."
+        )
+    if status == 404:
+        return (
+            "Hint: check APPKIT_EMBEDDINGS_ENDPOINT and "
+            "APPKIT_EMBEDDINGS_DEPLOYMENT. Azure OpenAI resolves a model by its "
+            "*deployment* name, which need not match the model name."
+        )
+    if status == 429:
+        return "Hint: the deployment is rate-limited; appkit already retried."
+    return ""
