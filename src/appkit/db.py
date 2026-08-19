@@ -25,7 +25,6 @@ import contextlib
 import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
-from functools import lru_cache
 from typing import Any
 
 from .config import env, is_fake
@@ -85,35 +84,76 @@ class Session:
 
 PG_AAD_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
 
+_pool_lock = threading.Lock()
+_pool_instance = None
 
-@lru_cache(maxsize=1)
-def _pool():
-    """Build (once) a psycopg connection pool that returns dict rows.
 
-    The password is an AAD access token from the managed identity. Tokens are
-    short-lived; ``reconnect_timeout`` lets the pool refresh broken connections.
-    For very long-lived processes, recycle the pool periodically.
+def _pg_password() -> str:
+    """The password used for a *new* Postgres connection.
+
+    Azure Database for PostgreSQL accepts an AAD access token as the password.
+    Those tokens expire after about an hour, so this must be called for every
+    connection the pool opens rather than once when the pool is built – a pool
+    that captured a single token would authenticate fine for an hour and then be
+    unable to open or replace any connection. ``_credential.token`` is cheap:
+    azure-identity caches the token and refreshes it as it nears expiry.
+
+    Tests override this seam to run the same psycopg code path against a plain
+    password-authenticated Postgres.
     """
-    from psycopg.rows import dict_row
-    from psycopg_pool import ConnectionPool
-
     from ._credential import token
 
-    conninfo = env("APPKIT_DB_DSN", required=True)
-    password = token(PG_AAD_SCOPE)
+    return token(PG_AAD_SCOPE)
 
-    def configure(conn):
-        conn.row_factory = dict_row
 
-    pool = ConnectionPool(
-        conninfo=conninfo,
-        kwargs={"password": password, "row_factory": dict_row},
-        configure=configure,
-        min_size=1,
-        max_size=int(env("APPKIT_DB_POOL_MAX", "10")),
-        open=True,
-    )
-    return pool
+def _connection_class():
+    """A psycopg ``Connection`` that fetches a fresh password per connect."""
+    import psycopg
+
+    class _TokenConnection(psycopg.Connection):
+        @classmethod
+        def connect(cls, conninfo="", **kwargs):
+            kwargs["password"] = _pg_password()
+            return super().connect(conninfo, **kwargs)
+
+    return _TokenConnection
+
+
+def _pool():
+    """Build (once) a psycopg connection pool that returns dict rows."""
+    global _pool_instance
+
+    with _pool_lock:
+        if _pool_instance is not None:
+            return _pool_instance
+
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+
+        _pool_instance = ConnectionPool(
+            conninfo=env("APPKIT_DB_DSN", required=True),
+            connection_class=_connection_class(),
+            kwargs={"row_factory": dict_row},
+            min_size=1,
+            max_size=int(env("APPKIT_DB_POOL_MAX", "10")),
+            # How long a caller waits for a connection before giving up. The
+            # default matches psycopg_pool's; lower it when a request should
+            # fail fast rather than queue behind an unreachable server.
+            timeout=float(env("APPKIT_DB_POOL_TIMEOUT", "30") or 30),
+            check=ConnectionPool.check_connection,
+            open=True,
+        )
+        return _pool_instance
+
+
+def _reset_pool() -> None:
+    """Close and drop the pool (used by tests and by config reloads)."""
+    global _pool_instance
+
+    with _pool_lock:
+        if _pool_instance is not None:
+            _pool_instance.close()
+        _pool_instance = None
 
 
 def _pg_query(sql: str, params: Params) -> list[dict[str, Any]]:

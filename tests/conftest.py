@@ -2,14 +2,42 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def fake_backend(monkeypatch):
-    """Force the in-memory backend and reset it before every test."""
+def fake_backend(request, monkeypatch):
+    """Force the in-memory backend and reset it before every test.
+
+    Live and soak tests are exempt — forcing the fake backend on them would let
+    them report success without contacting anything.
+    """
+    if request.node.get_closest_marker("live") or request.node.get_closest_marker("soak"):
+        yield
+        return
+
     monkeypatch.setenv("APPKIT_BACKEND", "fake")
+    monkeypatch.delenv("CONTAINER_APP_NAME", raising=False)
+    monkeypatch.delenv("WEBSITE_SITE_NAME", raising=False)
     import appkit
 
     appkit.reset_fakes()
     yield
     appkit.reset_fakes()
+
+
+@pytest.fixture
+def azure_backend(monkeypatch):
+    """Switch to the azure backend with a stubbed managed-identity token.
+
+    Everything below the credential runs for real: the same URL building,
+    pagination, retry and error handling that production uses. Only the token
+    *source* is replaced — that part belongs to azure-identity, not to appkit.
+
+    Yields the list of backoff sleeps, so retry timing can be asserted on
+    instead of waited for.
+    """
+    monkeypatch.setenv("APPKIT_BACKEND", "azure")
+    monkeypatch.setattr("appkit._credential.token", lambda scope: "test-token")
+    slept: list[float] = []
+    monkeypatch.setattr("appkit._graph._sleep", slept.append)
+    return slept
 
 
 @pytest.fixture
