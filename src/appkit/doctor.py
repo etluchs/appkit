@@ -6,6 +6,9 @@ Run it in the container, as the app::
     python -m appkit.doctor --json                    # for a Container Apps Job
     python -m appkit.doctor --list Requests --send-mail you@uzh.ch
 
+For a report an app can log on every boot, without contacting anything, see
+:func:`log_startup`.
+
 Every check runs independently and reports what it found, so one broken thing
 does not hide the rest. Nothing is contacted on the ``fake`` backend, and no
 token, password or connection string is ever printed.
@@ -323,6 +326,93 @@ def check_database() -> Check:
 
     version = str(row.get("version", "")).split(",")[0]
     return Check("database", PASS, version, [f"connected as {row.get('who', '?')}"])
+
+
+#: What switches each integration on, and what it does. The startup report
+#: reads these; the contacting checks above use the same names.
+_INTEGRATIONS = (
+    ("sharepoint", "APPKIT_SHAREPOINT_SITE", "read SharePoint lists"),
+    ("mail", "APPKIT_MAIL_SENDER", "send mail"),
+    ("database", "APPKIT_DB_DSN", "query Postgres"),
+    ("embeddings", "APPKIT_EMBEDDINGS_ENDPOINT", "embed text"),
+)
+
+#: Settings whose value must never be printed. A DSN carries a host *and*
+#: often a user; the rest are hostnames and mailbox addresses, which are the
+#: whole point of the report.
+_SECRET = frozenset({"APPKIT_DB_DSN"})
+
+
+def settings_checks() -> list[Check]:
+    """One check per integration: configured, or not, and what that means.
+
+    Nothing is contacted — this only reads configuration, so it is cheap
+    enough to run on every boot. "Not configured" is reported as SKIP rather
+    than passed over in silence, because an integration that is quietly absent
+    is the thing people lose an afternoon to.
+    """
+    checks: list[Check] = []
+    fake = config.backend() == config.FAKE
+
+    for name, variable, purpose in _INTEGRATIONS:
+        value = (config.env(variable) or "").strip()
+
+        if name == "sharepoint" and fake:
+            directory = (config.env("APPKIT_SHAREPOINT_FAKE_DIR") or "").strip()
+            if directory:
+                checks.append(Check(name, PASS, f"exports in {directory}"))
+            else:
+                checks.append(
+                    Check(name, SKIP, "APPKIT_SHAREPOINT_FAKE_DIR not set",
+                          hint="Lists will be the built-in seed data.")
+                )
+            continue
+
+        if not value:
+            checks.append(Check(name, SKIP, f"{variable} not set; cannot {purpose}"))
+        elif variable in _SECRET:
+            checks.append(Check(name, PASS, "configured"))
+        else:
+            checks.append(Check(name, PASS, value))
+
+    return checks
+
+
+def startup_checks() -> list[Check]:
+    """Everything that can be reported without contacting anything.
+
+    Meant to be logged as an app starts. The quiet failures appkit exists to
+    prevent — the wrong backend discarding mail, an integration nobody
+    configured — are invisible until someone notices the results are wrong, so
+    an app should say out loud what it is about to do. For the questions that
+    need a network round trip (does this identity *really* have Mail.Send?),
+    run the full doctor.
+    """
+    checks = [check_environment(), check_backend()]
+    if checks[-1].status == FAIL:
+        # Everything below reads the backend, so it would only repeat this.
+        return checks
+    checks.append(check_auth())
+    checks.extend(settings_checks())
+    return checks
+
+
+def log_startup(logger: logging.Logger | None = None, *, level: int = logging.INFO):
+    """Write :func:`startup_checks` to ``logger``, one line each.
+
+    Returns the checks, so a caller can add its own lines or react to a FAIL.
+
+    Note that a web server usually configures only its own loggers and leaves
+    the root one alone, so ``logging.basicConfig()`` (or equivalent) has to
+    have run or these records go nowhere.
+    """
+    logger = logger or logging.getLogger("appkit")
+    checks = startup_checks()
+    for check in checks:
+        logger.log(level, "config | %-12s %-5s %s", check.name, check.status, check.detail)
+        if check.hint:
+            logger.log(level, "config | %-12s       %s", "", check.hint)
+    return checks
 
 
 # --------------------------------------------------------------------------
