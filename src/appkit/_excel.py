@@ -1,14 +1,8 @@
-"""Read a SharePoint list export (``.xlsx``) into plain row dicts.
+"""Read a SharePoint **Export to Excel** workbook into plain row dicts.
 
-This is the fake backend's stand-in for Microsoft Graph: instead of calling
-``/sites/{site}/lists/{list}/items``, local dev can use the workbook that
-SharePoint's own **Export to Excel** produces. Parsing lives here for the same
-reason the Graph transport lives in :mod:`appkit._graph` – so that
-:mod:`appkit._fake` stays a store of state.
-
-The first worksheet is used. Its first non-empty row is the header, every row
-below it is one list item, and the export's ``ID`` column (if present) becomes
-the ``id`` key that the Graph path also guarantees.
+The first worksheet is used: its first non-empty row is the header, and every
+row below it is one list item. See :mod:`appkit._export` for the dispatch and
+the normalisation shared with the CSV reader.
 """
 
 from __future__ import annotations
@@ -16,6 +10,8 @@ from __future__ import annotations
 import datetime as _dt
 from pathlib import Path
 from typing import Any
+
+from ._export import is_blank
 
 
 def read_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -34,7 +30,7 @@ def read_rows(path: str | Path) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
 
         for cells in sheet.iter_rows(values_only=True):
-            if all(_is_blank(cell) for cell in cells):
+            if all(is_blank(cell) for cell in cells):
                 continue  # exports carry blank spacer and trailing rows
             if header is None:
                 header = [_header(cell) for cell in cells]
@@ -48,7 +44,6 @@ def read_rows(path: str | Path) -> list[dict[str, Any]]:
     finally:
         workbook.close()
 
-    _assign_ids(rows)
     return rows
 
 
@@ -57,21 +52,13 @@ def _row(header: list[str | None], cells: tuple[Any, ...]) -> dict[str, Any]:
     row: dict[str, Any] = {}
     for name, cell in zip(header, cells, strict=False):
         value = _coerce(cell)
-        if name and not _is_blank(value):
+        if name and not is_blank(value):
             row[name] = value
     return row
 
 
-def _assign_ids(rows: list[dict[str, Any]]) -> None:
-    """Normalise the export's ``ID`` column to a string ``id``, or number the rows."""
-    for position, row in enumerate(rows, start=1):
-        column = next((name for name in row if name.lower() == "id"), None)
-        value = row.pop(column) if column else None
-        row["id"] = str(value) if value is not None else str(position)
-
-
 def _header(cell: Any) -> str | None:
-    return str(cell).strip() if not _is_blank(cell) else None
+    return str(cell).strip() if not is_blank(cell) else None
 
 
 def _coerce(cell: Any) -> Any:
@@ -84,7 +71,3 @@ def _coerce(cell: Any) -> Any:
     if isinstance(cell, str):
         return cell.strip()
     return cell
-
-
-def _is_blank(value: Any) -> bool:
-    return value is None or (isinstance(value, str) and not value.strip())

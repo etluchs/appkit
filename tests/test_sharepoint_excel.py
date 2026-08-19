@@ -33,13 +33,13 @@ def export(tmp_path):
 
 
 def test_load_names_the_list_after_the_file(export):
-    _fake.load_sharepoint_xlsx(export)
+    _fake.load_sharepoint_export(export)
     rows = sharepoint.list_rows("Approvals")
     assert [r["Title"] for r in rows] == ["New monitor", "Ergonomic chair"]
 
 
 def test_load_accepts_an_explicit_list_name(export):
-    _fake.load_sharepoint_xlsx(export, list_name="Requests")
+    _fake.load_sharepoint_export(export, list_name="Requests")
     assert [r["Title"] for r in sharepoint.list_rows("Requests")] == [
         "New monitor",
         "Ergonomic chair",
@@ -47,19 +47,19 @@ def test_load_accepts_an_explicit_list_name(export):
 
 
 def test_ids_are_strings_like_the_graph_backend(export):
-    _fake.load_sharepoint_xlsx(export)
+    _fake.load_sharepoint_export(export)
     assert [r["id"] for r in sharepoint.list_rows("Approvals")] == ["7", "8"]
     assert "ID" not in sharepoint.list_rows("Approvals")[0]
 
 
 def test_ids_are_synthesised_when_the_export_has_no_id_column(tmp_path):
     path = write_xlsx(tmp_path / "Notes.xlsx", [["Title"], ["One"], ["Two"]])
-    _fake.load_sharepoint_xlsx(path)
+    _fake.load_sharepoint_export(path)
     assert [r["id"] for r in sharepoint.list_rows("Notes")] == ["1", "2"]
 
 
 def test_dates_become_iso_strings_and_numbers_stay_numbers(export):
-    _fake.load_sharepoint_xlsx(export)
+    _fake.load_sharepoint_export(export)
     row = sharepoint.list_rows("Approvals")[0]
     assert row["Submitted"] == "2026-07-20"
     assert row["Amount"] == 249.9
@@ -70,7 +70,7 @@ def test_timestamps_keep_their_time_component(tmp_path):
         tmp_path / "Events.xlsx",
         [["Title", "When"], ["Kickoff", dt.datetime(2026, 7, 20, 14, 30)]],
     )
-    _fake.load_sharepoint_xlsx(path)
+    _fake.load_sharepoint_export(path)
     assert sharepoint.list_rows("Events")[0]["When"] == "2026-07-20T14:30:00"
 
 
@@ -84,7 +84,7 @@ def test_blank_rows_and_empty_cells_are_dropped(tmp_path):
             ["  Padded  ", "   "],
         ],
     )
-    _fake.load_sharepoint_xlsx(path)
+    _fake.load_sharepoint_export(path)
     rows = sharepoint.list_rows("Sparse")
     assert rows == [
         {"Title": "Has status", "Status": "Open", "id": "1"},
@@ -93,7 +93,7 @@ def test_blank_rows_and_empty_cells_are_dropped(tmp_path):
 
 
 def test_loaded_rows_work_with_the_select_projection(export):
-    _fake.load_sharepoint_xlsx(export)
+    _fake.load_sharepoint_export(export)
     rows = sharepoint.list_rows("Approvals", select=["Title"])
     assert set(rows[0]) == {"id", "Title"}
 
@@ -101,7 +101,7 @@ def test_loaded_rows_work_with_the_select_projection(export):
 def test_a_workbook_with_no_header_is_an_error(tmp_path):
     path = write_xlsx(tmp_path / "Empty.xlsx", [])
     with pytest.raises(RuntimeError, match="no header row"):
-        _fake.load_sharepoint_xlsx(path)
+        _fake.load_sharepoint_export(path)
 
 
 # --- APPKIT_SHAREPOINT_FAKE_DIR -------------------------------------------

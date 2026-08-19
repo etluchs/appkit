@@ -44,28 +44,49 @@ Reads list items from Graph (`/sites/{site}/lists/{list}/items?expand=fields`),
 following pagination. The site defaults to `APPKIT_SHAREPOINT_SITE`.
 
 **Real data in the fake backend.** Rather than hand-writing seed rows, open the
-list in SharePoint, choose **Export → Export to Excel**, and save the workbook as
-`<ListName>.xlsx` in a folder of your choice:
+list in SharePoint and use **Export → Export to Excel** or **Export to CSV**.
+Save the file as `<ListName>.xlsx` / `<ListName>.csv` in a folder of your choice:
 
 ```sh
 export APPKIT_SHAREPOINT_FAKE_DIR=./sharepoint-exports
-# ./sharepoint-exports/Requests.xlsx  ->  sharepoint.list_rows("Requests")
+# ./sharepoint-exports/Requests.csv  ->  sharepoint.list_rows("Requests")
 ```
 
-Every `.xlsx` in that folder becomes the list named after its file. The first
-worksheet is read: the first non-empty row is the header, the export's `ID`
-column becomes the string `id` key (rows are numbered `"1"`, `"2"`, … if the
-column is missing), dates become ISO strings, and empty cells are dropped — so
-rows look exactly like what Graph returns. Lists without a matching file keep
-their built-in seed. Exports are re-read on every `reset_fakes()`, so they stay
-in place across tests.
+Every export in that folder becomes the list named after its file, so
+application code is unchanged. Rows are normalised to look like what Graph
+returns: the export's `ID` column becomes the string `id` key (rows are numbered
+`"1"`, `"2"`, … if there is no such column) and empty cells are dropped rather
+than returned as `None`. Lists without a matching file keep their built-in seed,
+and exports are re-read on every `reset_fakes()`, so they stay in place across
+tests.
+
+The **CSV export carries the list's structure**, and that is what makes it the
+more faithful of the two. It opens with a `ListSchema=` preamble holding the
+field definitions, followed by a header row of the list's *internal* field names
+— the same keys Graph puts in an item's `fields` facet. The schema is used for
+field types, so a multi-choice column comes back as a real list:
+
+```python
+sharepoint.list_rows("Services")[0]
+# {"id": "10", "Title": "Confluence", "user": ["Mitarbeitende"],
+#  "kosten": "kostenlos", ...}
+```
+
+Multi-line `Note` fields keep their newlines and HTML entities are unescaped.
+Everything other than multi-choice comes back as text: an export carries no
+type information beyond the schema, so values are not guessed at. (The Excel
+export has no schema at all — its header is display names, and only dates get
+special treatment, becoming ISO strings.)
 
 A single file can also be loaded directly, which is handy in a fixture:
 
 ```python
 from appkit import _fake
-_fake.load_sharepoint_xlsx("tests/data/Requests.xlsx", list_name="Requests")
+_fake.load_sharepoint_export("tests/data/Requests.csv", list_name="Requests")
 ```
+
+Misconfiguration is loud rather than silent: a missing directory, an unreadable
+export, or two files claiming the same list all raise.
 
 ### `appkit.mail`
 
@@ -117,7 +138,7 @@ needed in `azure` mode:
 | --- | --- | --- |
 | `APPKIT_BACKEND` | all | `fake` (default) or `azure`. |
 | `APPKIT_SHAREPOINT_SITE` | sharepoint | Graph site id. |
-| `APPKIT_SHAREPOINT_FAKE_DIR` | sharepoint | Folder of `<ListName>.xlsx` list exports (fake backend only). |
+| `APPKIT_SHAREPOINT_FAKE_DIR` | sharepoint | Folder of `<ListName>.xlsx` / `<ListName>.csv` list exports (fake backend only). |
 | `APPKIT_MAIL_SENDER` | mail | Mailbox to send as. |
 | `APPKIT_DB_DSN` | db | Postgres connection string (no password — the token is injected). |
 | `APPKIT_DB_POOL_MAX` | db | Max pool size (default 10). |

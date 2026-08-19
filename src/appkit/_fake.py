@@ -5,8 +5,8 @@ development and tests behave like the real thing without touching Azure:
 
 * SharePoint lists are dictionaries of rows. They start from a small seed and
   can be replaced with real data by exporting the list from SharePoint
-  (**Export to Excel**) – see :func:`load_sharepoint_xlsx` and
-  ``APPKIT_SHAREPOINT_FAKE_DIR``.
+  (**Export to Excel** or **Export to CSV**) – see
+  :func:`load_sharepoint_export` and ``APPKIT_SHAREPOINT_FAKE_DIR``.
 * Sent mail lands in an inspectable outbox instead of a real mailbox.
 
 Tests should call :func:`reset` (see ``appkit.reset_fakes``) between cases to
@@ -70,8 +70,8 @@ def _default_sharepoint() -> dict[str, list[dict]]:
 def reset() -> None:
     """Reset all fake state back to the deterministic seed.
 
-    Any ``.xlsx`` exports found in ``APPKIT_SHAREPOINT_FAKE_DIR`` are layered on
-    top of the seed, so re-seeding between tests keeps them in place.
+    Any list exports found in ``APPKIT_SHAREPOINT_FAKE_DIR`` are layered on top
+    of the seed, so re-seeding between tests keeps them in place.
     """
     with _lock:
         _sharepoint.clear()
@@ -92,27 +92,30 @@ def set_sharepoint_rows(list_name: str, rows: list[dict]) -> None:
         _sharepoint[list_name] = deepcopy(rows)
 
 
-def load_sharepoint_xlsx(path: str | Path, list_name: str | None = None) -> list[dict]:
-    """Seed a fake SharePoint list from an **Export to Excel** workbook.
+def load_sharepoint_export(path: str | Path, list_name: str | None = None) -> list[dict]:
+    """Seed a fake SharePoint list from an exported ``.xlsx`` or ``.csv`` file.
 
     Args:
-        path: The exported ``.xlsx`` file.
+        path: The file produced by SharePoint's **Export to Excel** or
+            **Export to CSV**.
         list_name: List to populate. Defaults to the file name without its
-            extension, so ``Requests.xlsx`` becomes the ``Requests`` list.
+            extension, so ``Requests.csv`` becomes the ``Requests`` list.
 
     Returns:
         The rows that were loaded.
     """
-    from . import _excel
+    from . import _export
 
     path = Path(path)
-    rows = _excel.read_rows(path)
+    rows = _export.read_rows(path)
     set_sharepoint_rows(list_name or path.stem, rows)
     return rows
 
 
 def _load_sharepoint_dir() -> None:
-    """Load every ``<ListName>.xlsx`` in ``APPKIT_SHAREPOINT_FAKE_DIR``, if set."""
+    """Load every list export in ``APPKIT_SHAREPOINT_FAKE_DIR``, if it is set."""
+    from . import _export
+
     configured = os.getenv("APPKIT_SHAREPOINT_FAKE_DIR", "").strip()
     if not configured:
         return
@@ -123,10 +126,19 @@ def _load_sharepoint_dir() -> None:
             f"APPKIT_SHAREPOINT_FAKE_DIR points at {directory}, which is not a directory."
         )
 
-    # Excel writes ~$Name.xlsx lock files next to an open workbook; skip them.
-    for file in sorted(directory.glob("*.xlsx")):
-        if not file.name.startswith("~$"):
-            load_sharepoint_xlsx(file)
+    exports: dict[str, list[Path]] = {}
+    for file in sorted(directory.iterdir()):
+        # Excel writes ~$Name.xlsx lock files next to an open workbook; skip them.
+        if file.suffix.lower() in _export.SUFFIXES and not file.name.startswith("~$"):
+            exports.setdefault(file.stem, []).append(file)
+
+    for list_name, files in exports.items():
+        if len(files) > 1:
+            raise RuntimeError(
+                f"{directory} holds more than one export for the '{list_name}' list: "
+                f"{', '.join(f.name for f in files)}. Keep only one."
+            )
+        load_sharepoint_export(files[0], list_name)
 
 
 # --- mail ------------------------------------------------------------------
