@@ -11,3 +11,8 @@ uv.lock
 
 # OS
 .DS_Store
+
+# Local SharePoint list exports. These carry real list data (names, e-mail
+# addresses); keep them out of the repo and point APPKIT_SHAREPOINT_FAKE_DIR
+# at them instead. Tests build their own synthetic exports.
+sample.csv
