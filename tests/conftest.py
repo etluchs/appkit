@@ -15,6 +15,10 @@ def fake_backend(request, monkeypatch):
     monkeypatch.setenv("APPKIT_BACKEND", "fake")
     monkeypatch.delenv("CONTAINER_APP_NAME", raising=False)
     monkeypatch.delenv("WEBSITE_SITE_NAME", raising=False)
+    # A developer who exports APPKIT_EMBEDDINGS_BACKEND=azure to work on a
+    # search feature would otherwise have this whole suite calling Azure
+    # OpenAI for real. Tests that want the override set it themselves.
+    monkeypatch.delenv("APPKIT_EMBEDDINGS_BACKEND", raising=False)
     import appkit
 
     appkit.reset_fakes()
