@@ -195,3 +195,60 @@ def test_short_response_is_an_error_not_a_misalignment(azure_backend, aoai_env):
         embeddings.embed(["a", "b"])
 
     assert "expected 2 embeddings" in str(caught.value)
+
+
+# --- choosing a backend for embeddings alone -------------------------------
+
+
+def test_the_backend_follows_appkit_backend_by_default(fake_backend):
+    assert embeddings.backend() == "fake"
+
+
+def test_the_backend_follows_appkit_backend_in_azure_mode(azure_backend):
+    assert embeddings.backend() == "azure"
+
+
+def test_azure_embeddings_on_the_fake_backend(fake_backend, monkeypatch):
+    """The case the override exists for: fixture data, real vectors.
+
+    Pseudo-vectors cannot show whether a search *ranks* well, so tuning a
+    semantic feature otherwise means standing up SharePoint and everything
+    else first, just to get meaningful embeddings.
+    """
+    monkeypatch.setenv("APPKIT_EMBEDDINGS_BACKEND", "azure")
+    monkeypatch.setenv("APPKIT_EMBEDDINGS_ENDPOINT", ENDPOINT)
+    monkeypatch.setattr("appkit._credential.token", lambda scope: "test-token")
+
+    assert embeddings.backend() == "azure"
+    assert embeddings.available() is True
+
+    with respx.mock:
+        respx.post(URL).mock(return_value=httpx.Response(200, json=_payload(1)))
+        assert embeddings.embed(["x"]) == [[0.0, 0.0, 0.0]]
+
+
+def test_fake_embeddings_on_the_azure_backend(azure_backend, aoai_env, monkeypatch):
+    """The override points both ways, so a deployment can switch them off."""
+    monkeypatch.setenv("APPKIT_EMBEDDINGS_BACKEND", "fake")
+
+    assert embeddings.available() is False
+    # No respx mock: reaching the network here would fail the test.
+    assert len(embeddings.embed(["x"])[0]) == embeddings.DIMENSIONS
+
+
+def test_an_unrecognised_override_is_refused(fake_backend, monkeypatch):
+    # Ignoring it would silently serve meaningless vectors, which is the exact
+    # failure this variable exists to prevent.
+    monkeypatch.setenv("APPKIT_EMBEDDINGS_BACKEND", "azrue")
+    with pytest.raises(ConfigError, match="APPKIT_EMBEDDINGS_BACKEND"):
+        embeddings.backend()
+    with pytest.raises(ConfigError):
+        embeddings.embed(["x"])
+
+
+def test_the_suite_is_insulated_from_an_exported_override(fake_backend):
+    """`tests/conftest.py` clears it, so a developer's shell cannot make the
+    whole suite call Azure OpenAI for real."""
+    import os
+
+    assert os.getenv("APPKIT_EMBEDDINGS_BACKEND") is None

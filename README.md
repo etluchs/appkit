@@ -141,6 +141,25 @@ The identity needs the **Cognitive Services OpenAI User** role on the resource.
 Inputs are sent in batches of `BATCH_SIZE`, and the response is re-sorted by its
 `index` field so a vector can never be paired with the wrong record.
 
+**Embedding for real against fake data.** Tuning a search feature needs vectors
+that mean something, but standing up SharePoint and the rest of production just
+to get them is a poor trade. `APPKIT_EMBEDDINGS_BACKEND` points embeddings at a
+backend of their own:
+
+```sh
+# fixture data from APPKIT_SHAREPOINT_FAKE_DIR, real vectors from Azure OpenAI
+export APPKIT_BACKEND=fake
+export APPKIT_EMBEDDINGS_BACKEND=azure
+export APPKIT_EMBEDDINGS_ENDPOINT=https://<resource>.openai.azure.com
+```
+
+It defaults to following `APPKIT_BACKEND`, so a test suite stays offline unless
+someone deliberately says otherwise — and `tests/conftest.py` clears it, so an
+exported value cannot quietly make the suite call out. It works both ways: set
+it to `fake` to switch embeddings off while the rest of an app runs on `azure`.
+An unrecognised value raises rather than being ignored, because falling back to
+meaningless vectors is the failure it exists to prevent.
+
 ### `appkit.db`
 
 ```python
@@ -210,7 +229,8 @@ network in front of the app. It needs the `appkit[verify]` extra, Easy Auth's
 
 ## Configuration
 
-Only `APPKIT_SHAREPOINT_FAKE_DIR` applies to the fake backend; the rest are
+Only `APPKIT_SHAREPOINT_FAKE_DIR` and `APPKIT_EMBEDDINGS_BACKEND` apply to the
+fake backend; the rest are
 needed in `azure` mode:
 
 | Variable | Used by | Meaning |
@@ -219,6 +239,7 @@ needed in `azure` mode:
 | `APPKIT_SHAREPOINT_SITE` | sharepoint | Graph site id. |
 | `APPKIT_SHAREPOINT_FAKE_DIR` | sharepoint | Folder of `<ListName>.xlsx` / `<ListName>.csv` list exports (fake backend only). |
 | `APPKIT_MAIL_SENDER` | mail | Mailbox to send as. |
+| `APPKIT_EMBEDDINGS_BACKEND` | embeddings | `fake` or `azure` for embeddings alone; defaults to `APPKIT_BACKEND`. |
 | `APPKIT_EMBEDDINGS_ENDPOINT` | embeddings | Azure OpenAI resource endpoint, e.g. `https://x.openai.azure.com`. |
 | `APPKIT_EMBEDDINGS_DEPLOYMENT` | embeddings | Deployment name (default `text-embedding-3-small`). |
 | `APPKIT_EMBEDDINGS_API_VERSION` | embeddings | REST API version (default `2023-05-15`). |
