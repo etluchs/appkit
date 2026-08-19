@@ -19,13 +19,15 @@ In ``azure`` mode this calls the deployment named by
 app's managed identity. The identity needs the **Cognitive Services OpenAI
 User** role on that resource.
 
-Which backend embeddings use normally follows ``APPKIT_BACKEND``, but it can be
-pointed the other way on its own with ``APPKIT_EMBEDDINGS_BACKEND`` — see
-:func:`backend`. That exists for one real case: developing a search feature
-against local fixture data while still getting vectors that mean something.
+**Configuring an endpoint is what turns embeddings on**, independently of
+``APPKIT_BACKEND``. Nobody sets an Azure OpenAI endpoint by accident, so the
+variable that says *where* to embed is also the one that says *whether* to —
+and that makes one genuinely useful setup ordinary configuration: fixture data
+from the fake backend, with vectors that actually mean something, which is what
+tuning a search feature needs.
 
-In ``fake`` mode :func:`available` returns ``False``, and :func:`embed` returns
-deterministic pseudo-vectors. Those vectors are stable but **meaningless** --
+With no endpoint configured, :func:`available` returns ``False`` and
+:func:`embed` returns deterministic pseudo-vectors. Those vectors are stable but **meaningless** --
 they exist so the surrounding code path can be exercised offline, never so that
 relevance can be tested. An app should treat semantic matching as an
 enhancement over a lexical search that works without it, and
@@ -39,8 +41,7 @@ import math
 import os
 from typing import Any
 
-from .config import AZURE, FAKE, env
-from .config import backend as _app_backend
+from .config import env, is_fake
 
 #: Dimensionality of ``text-embedding-3-small``, and of the fake vectors.
 DIMENSIONS = 1536
@@ -54,56 +55,20 @@ DEFAULT_DEPLOYMENT = "text-embedding-3-small"
 #: per-request token ceiling.
 BATCH_SIZE = 128
 
-#: Points embeddings at a backend of their own, independently of
-#: ``APPKIT_BACKEND``. See :func:`backend`.
-BACKEND_ENV = "APPKIT_EMBEDDINGS_BACKEND"
-
-
-def backend() -> str:
-    """Which backend embeddings use: ``APPKIT_BACKEND``, unless overridden.
-
-    ``APPKIT_EMBEDDINGS_BACKEND`` exists for one situation that configuration
-    could not otherwise express: running an app on the ``fake`` backend — local
-    fixture data, no SharePoint, no credentials — while still embedding for
-    real, because pseudo-vectors cannot tell you whether a search *ranks* well.
-    Without it, tuning a semantic feature means standing up every other
-    integration first.
-
-    It is opt-in and **defaults to following APPKIT_BACKEND**, so a test suite
-    stays offline unless someone deliberately says otherwise. An unrecognised
-    value raises rather than being ignored: silently falling back to
-    meaningless vectors is exactly the failure this variable exists to avoid.
-
-    Raises:
-        ConfigError: if the variable holds something other than ``fake`` or
-            ``azure``.
-    """
-    raw = os.getenv(BACKEND_ENV)
-    value = (raw or "").strip().lower()
-    if value in (FAKE, AZURE):
-        return value
-    if value:
-        from .errors import ConfigError
-
-        raise ConfigError(
-            f"{BACKEND_ENV}={raw!r} is not a valid backend. Use {AZURE!r} to embed "
-            f"for real, {FAKE!r} for deterministic pseudo-vectors, or leave it "
-            f"unset to follow APPKIT_BACKEND."
-        )
-    return _app_backend()
-
-
 def available() -> bool:
     """True when :func:`embed` returns vectors that carry meaning.
 
-    ``False`` on the fake backend, and ``False`` in ``azure`` mode when no
-    endpoint is configured. Call this before offering a semantic feature, and
-    fall back to something lexical when it says no -- an app that requires
-    embeddings cannot run locally.
+    ``False`` whenever ``APPKIT_EMBEDDINGS_ENDPOINT`` is unset, which is the
+    default everywhere and the normal state locally and in tests. Call this
+    before offering a semantic feature and fall back to something lexical when
+    it says no -- an app that *requires* embeddings cannot be run or tested
+    without an Azure OpenAI resource.
     """
-    if backend() != AZURE:
-        return False
-    return bool(os.getenv("APPKIT_EMBEDDINGS_ENDPOINT", "").strip())
+    return bool(_endpoint())
+
+
+def _endpoint() -> str:
+    return os.getenv("APPKIT_EMBEDDINGS_ENDPOINT", "").strip().rstrip("/")
 
 
 def embed(texts: list[str], *, deployment: str | None = None) -> list[list[float]]:
@@ -116,8 +81,9 @@ def embed(texts: list[str], *, deployment: str | None = None) -> list[list[float
             :data:`DEFAULT_DEPLOYMENT`.
 
     Raises:
-        ConfigError: if ``APPKIT_EMBEDDINGS_ENDPOINT`` is unset in azure mode,
-            or ``APPKIT_EMBEDDINGS_BACKEND`` holds an unrecognised value.
+        ConfigError: if ``APPKIT_EMBEDDINGS_ENDPOINT`` is unset while the app
+            runs on the ``azure`` backend -- there, a missing endpoint is a
+            deployment mistake, not a request for pseudo-vectors.
         AzureOpenAIError: if the service rejects the request.
     """
     if not texts:
@@ -125,10 +91,15 @@ def embed(texts: list[str], *, deployment: str | None = None) -> list[list[float
     if any(not isinstance(text, str) for text in texts):
         raise TypeError("embed() takes a list of strings")
 
-    if backend() != AZURE:
-        return [_fake_vector(text) for text in texts]
+    endpoint = _endpoint()
+    if not endpoint:
+        if is_fake():
+            return [_fake_vector(text) for text in texts]
+        # On the azure backend a missing endpoint is a misconfigured
+        # deployment. Quietly handing back meaningless vectors would surface
+        # later as poor relevance, which is far harder to trace than a raise.
+        env("APPKIT_EMBEDDINGS_ENDPOINT", required=True)
 
-    endpoint = str(env("APPKIT_EMBEDDINGS_ENDPOINT", required=True)).rstrip("/")
     deployment = (
         deployment
         or os.getenv("APPKIT_EMBEDDINGS_DEPLOYMENT", "").strip()
