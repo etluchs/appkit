@@ -239,3 +239,66 @@ def test_the_suite_is_insulated_from_an_exported_endpoint(fake_backend):
     import os
 
     assert os.getenv("APPKIT_EMBEDDINGS_ENDPOINT") is None
+
+
+# --- however the endpoint was written down ---------------------------------
+
+
+@respx.mock
+def test_a_full_deployment_url_is_accepted(azure_backend, monkeypatch):
+    """The URL people actually have in front of them is the deployment URL.
+
+    Appending the request path to it yields
+    `.../openai/deployments/x/openai/deployments/x/embeddings` and a 404 that
+    reads exactly like a genuinely missing deployment — a trap worth removing.
+    """
+    monkeypatch.setenv(
+        "APPKIT_EMBEDDINGS_ENDPOINT",
+        f"{ENDPOINT}/openai/deployments/{DEPLOYMENT}",
+    )
+    monkeypatch.delenv("APPKIT_EMBEDDINGS_DEPLOYMENT", raising=False)
+    route = respx.post(URL).mock(return_value=httpx.Response(200, json=_payload(1)))
+
+    assert embeddings.embed(["x"]) == [[0.0, 0.0, 0.0]]
+    assert route.called
+
+
+@respx.mock
+def test_a_full_url_supplies_the_deployment_name(azure_backend, monkeypatch):
+    monkeypatch.setenv(
+        "APPKIT_EMBEDDINGS_ENDPOINT", f"{ENDPOINT}/openai/deployments/text-embedding-3-large"
+    )
+    monkeypatch.delenv("APPKIT_EMBEDDINGS_DEPLOYMENT", raising=False)
+    url = f"{ENDPOINT}/openai/deployments/text-embedding-3-large/embeddings?api-version={DEFAULT_API_VERSION}"
+    respx.post(url).mock(return_value=httpx.Response(200, json=_payload(1)))
+
+    assert embeddings.embed(["x"])
+
+
+@respx.mock
+def test_an_explicit_deployment_still_wins(azure_backend, monkeypatch):
+    monkeypatch.setenv(
+        "APPKIT_EMBEDDINGS_ENDPOINT", f"{ENDPOINT}/openai/deployments/from-the-url"
+    )
+    monkeypatch.setenv("APPKIT_EMBEDDINGS_DEPLOYMENT", "from-the-setting")
+    url = f"{ENDPOINT}/openai/deployments/from-the-setting/embeddings?api-version={DEFAULT_API_VERSION}"
+    respx.post(url).mock(return_value=httpx.Response(200, json=_payload(1)))
+
+    assert embeddings.embed(["x"])
+
+
+@respx.mock
+def test_a_gateway_base_path_is_left_alone(azure_backend, monkeypatch):
+    """Only a deployment *path* is trimmed, not a base that ends in /openai."""
+    base = "https://gateway.example.ch/openai"
+    monkeypatch.setenv("APPKIT_EMBEDDINGS_ENDPOINT", base)
+    monkeypatch.delenv("APPKIT_EMBEDDINGS_DEPLOYMENT", raising=False)
+    url = f"{base}/openai/deployments/{DEPLOYMENT}/embeddings?api-version={DEFAULT_API_VERSION}"
+    respx.post(url).mock(return_value=httpx.Response(200, json=_payload(1)))
+
+    assert embeddings.embed(["x"])
+
+
+def test_a_trailing_slash_is_harmless(azure_backend, monkeypatch):
+    monkeypatch.setenv("APPKIT_EMBEDDINGS_ENDPOINT", ENDPOINT + "/")
+    assert embeddings.available() is True
