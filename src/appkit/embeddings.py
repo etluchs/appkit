@@ -67,8 +67,40 @@ def available() -> bool:
     return bool(_endpoint())
 
 
+#: Where a deployment URL starts. Everything from here on is built by
+#: :func:`_embed_via_azure`, so an endpoint that already contains it was pasted
+#: whole rather than trimmed to the resource.
+_DEPLOYMENT_PATH = "/openai/"
+
+
 def _endpoint() -> str:
-    return os.getenv("APPKIT_EMBEDDINGS_ENDPOINT", "").strip().rstrip("/")
+    """The Azure OpenAI resource endpoint, however it was written down.
+
+    ``APPKIT_EMBEDDINGS_ENDPOINT`` wants the resource
+    (``https://x.openai.azure.com``), but the URL people have in front of them
+    — from the portal, from a curl example, from a colleague — is usually the
+    full deployment URL. Appending the request path to that produces
+    ``.../openai/deployments/x/openai/deployments/x/embeddings`` and a 404 that
+    looks exactly like a genuinely missing deployment, so both spellings are
+    accepted rather than one of them being a trap.
+
+    A gateway whose base path merely *ends* in ``/openai`` is untouched: the
+    trim needs the trailing slash that only a deployment path has.
+    """
+    raw = os.getenv("APPKIT_EMBEDDINGS_ENDPOINT", "").strip().rstrip("/")
+    marker = raw.find(_DEPLOYMENT_PATH)
+    return raw[:marker] if marker > 0 else raw
+
+
+def _deployment_from_endpoint() -> str:
+    """The deployment named in the endpoint, if it was pasted in whole.
+
+    Saves setting ``APPKIT_EMBEDDINGS_DEPLOYMENT`` to repeat something the URL
+    already said. An explicit setting still wins.
+    """
+    raw = os.getenv("APPKIT_EMBEDDINGS_ENDPOINT", "").strip().rstrip("/")
+    _, _, tail = raw.partition("/openai/deployments/")
+    return tail.split("/")[0] if tail else ""
 
 
 def embed(texts: list[str], *, deployment: str | None = None) -> list[list[float]]:
@@ -103,6 +135,7 @@ def embed(texts: list[str], *, deployment: str | None = None) -> list[list[float
     deployment = (
         deployment
         or os.getenv("APPKIT_EMBEDDINGS_DEPLOYMENT", "").strip()
+        or _deployment_from_endpoint()
         or DEFAULT_DEPLOYMENT
     )
     return _embed_via_azure(texts, endpoint=endpoint, deployment=deployment)
