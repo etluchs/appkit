@@ -43,6 +43,30 @@ sharepoint.list_rows("Requests", site="contoso.sharepoint.com,<siteId>,<webId>")
 Reads list items from Graph (`/sites/{site}/lists/{list}/items?expand=fields`),
 following pagination. The site defaults to `APPKIT_SHAREPOINT_SITE`.
 
+**Real data in the fake backend.** Rather than hand-writing seed rows, open the
+list in SharePoint, choose **Export → Export to Excel**, and save the workbook as
+`<ListName>.xlsx` in a folder of your choice:
+
+```sh
+export APPKIT_SHAREPOINT_FAKE_DIR=./sharepoint-exports
+# ./sharepoint-exports/Requests.xlsx  ->  sharepoint.list_rows("Requests")
+```
+
+Every `.xlsx` in that folder becomes the list named after its file. The first
+worksheet is read: the first non-empty row is the header, the export's `ID`
+column becomes the string `id` key (rows are numbered `"1"`, `"2"`, … if the
+column is missing), dates become ISO strings, and empty cells are dropped — so
+rows look exactly like what Graph returns. Lists without a matching file keep
+their built-in seed. Exports are re-read on every `reset_fakes()`, so they stay
+in place across tests.
+
+A single file can also be loaded directly, which is handy in a fixture:
+
+```python
+from appkit import _fake
+_fake.load_sharepoint_xlsx("tests/data/Requests.xlsx", list_name="Requests")
+```
+
 ### `appkit.mail`
 
 ```python
@@ -86,12 +110,14 @@ render without a login.
 
 ## Configuration
 
-Only needed in `azure` mode:
+Only `APPKIT_SHAREPOINT_FAKE_DIR` applies to the fake backend; the rest are
+needed in `azure` mode:
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
 | `APPKIT_BACKEND` | all | `fake` (default) or `azure`. |
 | `APPKIT_SHAREPOINT_SITE` | sharepoint | Graph site id. |
+| `APPKIT_SHAREPOINT_FAKE_DIR` | sharepoint | Folder of `<ListName>.xlsx` list exports (fake backend only). |
 | `APPKIT_MAIL_SENDER` | mail | Mailbox to send as. |
 | `APPKIT_DB_DSN` | db | Postgres connection string (no password — the token is injected). |
 | `APPKIT_DB_POOL_MAX` | db | Max pool size (default 10). |
