@@ -269,7 +269,10 @@ def test_a_full_url_supplies_the_deployment_name(azure_backend, monkeypatch):
         "APPKIT_EMBEDDINGS_ENDPOINT", f"{ENDPOINT}/openai/deployments/text-embedding-3-large"
     )
     monkeypatch.delenv("APPKIT_EMBEDDINGS_DEPLOYMENT", raising=False)
-    url = f"{ENDPOINT}/openai/deployments/text-embedding-3-large/embeddings?api-version={DEFAULT_API_VERSION}"
+    url = (
+        f"{ENDPOINT}/openai/deployments/text-embedding-3-large"
+        f"/embeddings?api-version={DEFAULT_API_VERSION}"
+    )
     respx.post(url).mock(return_value=httpx.Response(200, json=_payload(1)))
 
     assert embeddings.embed(["x"])
@@ -281,7 +284,10 @@ def test_an_explicit_deployment_still_wins(azure_backend, monkeypatch):
         "APPKIT_EMBEDDINGS_ENDPOINT", f"{ENDPOINT}/openai/deployments/from-the-url"
     )
     monkeypatch.setenv("APPKIT_EMBEDDINGS_DEPLOYMENT", "from-the-setting")
-    url = f"{ENDPOINT}/openai/deployments/from-the-setting/embeddings?api-version={DEFAULT_API_VERSION}"
+    url = (
+        f"{ENDPOINT}/openai/deployments/from-the-setting"
+        f"/embeddings?api-version={DEFAULT_API_VERSION}"
+    )
     respx.post(url).mock(return_value=httpx.Response(200, json=_payload(1)))
 
     assert embeddings.embed(["x"])

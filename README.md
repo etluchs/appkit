@@ -153,6 +153,14 @@ export APPKIT_BACKEND=fake
 export APPKIT_EMBEDDINGS_ENDPOINT=https://<resource>.openai.azure.com
 ```
 
+Either spelling of the endpoint works — the resource
+(`https://x.openai.azure.com`) or the full deployment URL you are more likely to
+have in front of you (`https://x.openai.azure.com/openai/deployments/my-model`).
+Appending the request path to the second form would otherwise produce a 404 that
+reads exactly like a genuinely missing deployment. The full form also supplies
+the deployment name, so `APPKIT_EMBEDDINGS_DEPLOYMENT` only needs setting when
+it differs.
+
 Unset it and embeddings go back to pseudo-vectors — which is also how you turn
 semantic search off without redeploying anything else. `tests/conftest.py`
 clears it, so an endpoint exported in a developer's shell cannot quietly make a
