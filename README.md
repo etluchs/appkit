@@ -113,6 +113,34 @@ mail.outbox()   # fake backend: inspect what was "sent"
 Sends via `POST /users/{sender}/sendMail`. The sender defaults to
 `APPKIT_MAIL_SENDER`.
 
+### `appkit.embeddings`
+
+```python
+from appkit import embeddings
+
+if embeddings.available():
+    vectors = embeddings.embed(["a service description", "another one"])
+```
+
+Turns text into vectors with Azure OpenAI, so an app can match on *meaning*
+rather than on the words a record happens to contain — a search for "survey"
+finding a service that only ever says "Umfrage".
+
+For the sizes internal apps deal in, keep the whole thing in memory: embed a few
+hundred records once, embed the query, take the highest cosine similarity. There
+is no vector database here and appkit does not provide one.
+
+**`available()` is the important call.** On the fake backend it returns `False`
+and `embed()` hands back deterministic pseudo-vectors — stable, so tests repeat,
+and meaningless, so nothing about relevance can be concluded from them. Build the
+feature as an enhancement over a lexical search that works without embeddings,
+and ask `available()` before blending them in. An app that *requires* embeddings
+cannot be run or tested locally.
+
+The identity needs the **Cognitive Services OpenAI User** role on the resource.
+Inputs are sent in batches of `BATCH_SIZE`, and the response is re-sorted by its
+`index` field so a vector can never be paired with the wrong record.
+
 ### `appkit.db`
 
 ```python
@@ -191,6 +219,9 @@ needed in `azure` mode:
 | `APPKIT_SHAREPOINT_SITE` | sharepoint | Graph site id. |
 | `APPKIT_SHAREPOINT_FAKE_DIR` | sharepoint | Folder of `<ListName>.xlsx` / `<ListName>.csv` list exports (fake backend only). |
 | `APPKIT_MAIL_SENDER` | mail | Mailbox to send as. |
+| `APPKIT_EMBEDDINGS_ENDPOINT` | embeddings | Azure OpenAI resource endpoint, e.g. `https://x.openai.azure.com`. |
+| `APPKIT_EMBEDDINGS_DEPLOYMENT` | embeddings | Deployment name (default `text-embedding-3-small`). |
+| `APPKIT_EMBEDDINGS_API_VERSION` | embeddings | REST API version (default `2023-05-15`). |
 | `APPKIT_DB_DSN` | db | Postgres connection string (no password — the token is injected). |
 | `APPKIT_DB_POOL_MAX` | db | Max pool size (default 10). |
 | `APPKIT_AUTH` | auth | `easyauth`, `verify` or `dev`. Required on an Azure app platform. |
@@ -198,7 +229,8 @@ needed in `azure` mode:
 | `APPKIT_DEV_USER` / `APPKIT_DEV_EMAIL` / `APPKIT_DEV_ROLES` | auth | The local dev user (`APPKIT_AUTH=dev` only). |
 
 The managed identity needs, at minimum: Graph `Sites.Read.All` (SharePoint),
-`Mail.Send` (mail), and an AAD role on the Postgres server (db).
+`Mail.Send` (mail), an AAD role on the Postgres server (db), and **Cognitive
+Services OpenAI User** on the Azure OpenAI resource (embeddings).
 
 ## Errors
 
@@ -219,6 +251,12 @@ for. Graph requests are retried with backoff on throttling (`429`, honouring
 `Retry-After`) and transient server errors; `sendMail` is only retried when Graph
 tells us it did *not* process the request, since sending is not idempotent.
 Configuration problems raise `ConfigError`.
+
+`AzureOpenAIError` is the same idea for `appkit.embeddings`, and its message
+names the likely cause: a missing role assignment on 401/403, the deployment
+name on 404, and — for the `SubscriptionNotRegistered` 400 — the
+`az provider register --namespace Microsoft.CognitiveServices` the caller's
+subscription is missing.
 
 ## Checking a deployment
 
