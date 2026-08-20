@@ -222,6 +222,7 @@ the user is established:
 | --- | --- |
 | `easyauth` | Trust the platform-injected headers. **Only safe if Easy Auth is enabled and set to reject unauthenticated requests.** |
 | `verify` | Ignore those headers; cryptographically verify the `X-MS-TOKEN-AAD-ID-TOKEN` JWT against the tenant's signing keys. Forged headers cannot survive this. |
+| `public` | Nobody is signed in. The headers are ignored rather than trusted, so `user()` always returns `None` and forging one gains nothing. For apps that are deliberately anonymous. |
 | `dev` | The local dev user, plus header simulation. **Refused** on an Azure app platform. |
 
 Unset, it follows the backend (`fake` → `dev`, `azure` → `easyauth`) — but on
@@ -255,7 +256,7 @@ needed in `azure` mode:
 | `APPKIT_EMBEDDINGS_API_VERSION` | embeddings | REST API version (default `2023-05-15`). |
 | `APPKIT_DB_DSN` | db | Postgres connection string (no password — the token is injected). |
 | `APPKIT_DB_POOL_MAX` | db | Max pool size (default 10). |
-| `APPKIT_AUTH` | auth | `easyauth`, `verify` or `dev`. Required on an Azure app platform. |
+| `APPKIT_AUTH` | auth | `easyauth`, `verify`, `public` or `dev`. Required on an Azure app platform. |
 | `APPKIT_AUTH_TENANT_ID` / `APPKIT_AUTH_CLIENT_ID` / `APPKIT_AUTH_AUTHORITY` | auth | Only for `APPKIT_AUTH=verify`. |
 | `APPKIT_DEV_USER` / `APPKIT_DEV_EMAIL` / `APPKIT_DEV_ROLES` | auth | The local dev user (`APPKIT_AUTH=dev` only). |
 

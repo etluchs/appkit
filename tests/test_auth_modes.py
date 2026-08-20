@@ -61,6 +61,12 @@ def test_easyauth_can_be_declared_on_platform(monkeypatch, on_platform):
     assert auth.mode() == auth.EASYAUTH
 
 
+def test_public_can_be_declared_on_platform(monkeypatch, on_platform):
+    """Unlike dev, an app with no sign-in is a legitimate thing to run there."""
+    monkeypatch.setenv("APPKIT_AUTH", "public")
+    assert auth.mode() == auth.PUBLIC
+
+
 # --- what each mode does with a request -----------------------------------
 
 def test_easyauth_trusts_the_headers_and_has_no_dev_fallback(monkeypatch):
@@ -88,4 +94,13 @@ def test_verify_mode_ignores_the_spoofable_headers(monkeypatch, easy_auth_reques
     monkeypatch.setenv("APPKIT_AUTH", "verify")
 
     assert auth.user(easy_auth_request()) is None
+    assert auth.user(Req({"x-ms-client-principal-name": "attacker@uzh.ch"})) is None
+
+
+def test_public_mode_ignores_the_spoofable_headers(monkeypatch, easy_auth_request):
+    """The whole point: with no Easy Auth in front, headers are a caller's to choose."""
+    monkeypatch.setenv("APPKIT_AUTH", "public")
+
+    assert auth.user(Req({})) is None
+    assert auth.user(easy_auth_request(roles=("approver",))) is None
     assert auth.user(Req({"x-ms-client-principal-name": "attacker@uzh.ch"})) is None

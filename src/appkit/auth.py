@@ -32,6 +32,11 @@ appkit cannot detect that from inside the container, so it will not guess.
   ``X-MS-TOKEN-AAD-ID-TOKEN`` JWT against the tenant's signing keys. Forged
   headers cannot survive this. Needs Easy Auth's token store enabled and the
   ``appkit[verify]`` extra installed.
+* ``public``   – nobody is signed in. The platform headers are ignored
+  entirely rather than trusted, so :func:`user` always returns ``None`` and a
+  forged header buys the caller nothing. For apps that are deliberately
+  anonymous, which is a different statement from ``easyauth`` with no Easy
+  Auth in front of it.
 * ``dev``      – the local dev user (and header simulation). Refused outright
   when running on an Azure app platform.
 
@@ -54,8 +59,9 @@ from .errors import ConfigError
 
 EASYAUTH = "easyauth"
 VERIFY = "verify"
+PUBLIC = "public"
 DEV = "dev"
-_MODES = (EASYAUTH, VERIFY, DEV)
+_MODES = (EASYAUTH, VERIFY, PUBLIC, DEV)
 
 # Claim type URIs emitted by Azure AD via Easy Auth.
 _NAME_CLAIMS = (
@@ -103,7 +109,7 @@ class _HasHeaders(Protocol):
 
 
 def mode() -> str:
-    """Return the active auth mode (``easyauth``, ``verify`` or ``dev``).
+    """Return the active auth mode (``easyauth``, ``verify``, ``public`` or ``dev``).
 
     Raises:
         ConfigError: if ``APPKIT_AUTH`` is unrecognised, is unset while running
@@ -126,7 +132,10 @@ def mode() -> str:
                 "headers — which is only safe if Easy Auth is enabled and set to "
                 "reject unauthenticated requests, so that no request can reach "
                 "this container carrying headers a caller chose — or "
-                "APPKIT_AUTH=verify to validate the signed id token instead."
+                "APPKIT_AUTH=verify to validate the signed id token instead. "
+                "If the app has no sign-in at all, say so with "
+                "APPKIT_AUTH=public, which ignores those headers rather than "
+                "trusting them."
             )
         value = DEV if is_fake() else EASYAUTH
 
@@ -134,7 +143,8 @@ def mode() -> str:
         raise ConfigError(
             "APPKIT_AUTH=dev is refused on an Azure app platform: it would sign "
             "every caller in as the dev user, with the roles named by "
-            "APPKIT_DEV_ROLES. Use easyauth or verify."
+            "APPKIT_DEV_ROLES. Use easyauth or verify, or public if the app "
+            "has no sign-in at all."
         )
 
     return value
@@ -147,8 +157,16 @@ def user(request: _HasHeaders) -> User | None:
         request: Anything with a ``.headers`` mapping (case-insensitive lookup
             is assumed, as with Starlette/FastAPI requests).
     """
-    headers = _Headers(getattr(request, "headers", request))
     active = mode()
+
+    # Before the headers are so much as read: a public app establishes no user,
+    # so forging X-MS-CLIENT-PRINCIPAL gains a caller nothing. Falling through
+    # to _from_headers here — as easyauth does — would hand any caller the
+    # roles they asked for, which is the whole thing this mode rules out.
+    if active == PUBLIC:
+        return None
+
+    headers = _Headers(getattr(request, "headers", request))
 
     if active == VERIFY:
         return _verified_user(headers)

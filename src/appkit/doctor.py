@@ -155,12 +155,18 @@ def check_auth() -> Check:
         return Check("auth", FAIL, str(exc))
 
     if active != auth.VERIFY:
-        note = (
-            "Trusting X-MS-CLIENT-PRINCIPAL headers. This is only safe if Easy "
-            "Auth rejects unauthenticated requests."
-            if active == auth.EASYAUTH
-            else "Local dev user; refused on an Azure app platform."
-        )
+        if active == auth.EASYAUTH:
+            note = (
+                "Trusting X-MS-CLIENT-PRINCIPAL headers. This is only safe if "
+                "Easy Auth rejects unauthenticated requests."
+            )
+        elif active == auth.PUBLIC:
+            note = (
+                "No user is ever established and the platform headers are "
+                "ignored, so anyone who can reach this app can use it."
+            )
+        else:
+            note = "Local dev user; refused on an Azure app platform."
         return Check("auth", PASS, active, [note])
 
     missing = [
