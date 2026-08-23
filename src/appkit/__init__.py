@@ -20,7 +20,7 @@ The active backend is chosen by ``APPKIT_BACKEND`` (``fake`` by default,
 
 from __future__ import annotations
 
-from . import auth, config, db, embeddings, errors, mail, sharepoint
+from . import auth, config, db, directory, dns, embeddings, errors, mail, sharepoint
 from .auth import User, user
 from .config import backend, is_fake
 from .errors import AppkitError, AzureOpenAIError, ConfigError, GraphError
@@ -29,6 +29,8 @@ __all__ = [
     "auth",
     "config",
     "db",
+    "directory",
+    "dns",
     "embeddings",
     "errors",
     "mail",

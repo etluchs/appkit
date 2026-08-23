@@ -16,6 +16,8 @@ dependencies = [
     "openpyxl>=3.1",
     "psycopg[binary]>=3.1",
     "psycopg-pool>=3.2",
+    # Real DNS lookups for appkit.dns; the fake backend never calls it.
+    "dnspython>=2.6",
 ]
 
 [project.optional-dependencies]

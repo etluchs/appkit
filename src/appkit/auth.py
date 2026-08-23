@@ -84,6 +84,16 @@ _ROLE_CLAIMS = (
     "roles",
     "http://schemas.microsoft.com/ws/2008/06/identity/claims/role",
 )
+# The on-premises account name ("shortname"). Worth carrying separately from
+# email because shared mailboxes make email a poor identity: two people can
+# hold the same address, so an app that authorizes on email will grant one of
+# them the other's permissions. The shortname is per-person.
+_SHORTNAME_CLAIMS = (
+    "onpremisessamaccountname",
+    "http://schemas.microsoft.com/identity/claims/onpremisessamaccountname",
+    "samaccountname",
+    "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/windowsaccountname",
+)
 
 
 @dataclass(frozen=True)
@@ -95,6 +105,9 @@ class User:
     email: str = ""
     provider: str = ""
     roles: tuple[str, ...] = field(default_factory=tuple)
+    #: On-premises account name, when the tenant emits it; otherwise "".
+    #: Use this, not :attr:`email`, as the key for per-person authorization.
+    shortname: str = ""
 
     @property
     def is_authenticated(self) -> bool:
@@ -202,6 +215,14 @@ def _from_headers(headers: _Headers) -> User | None:
     return None
 
 
+def _normalize_shortname(value: str) -> str:
+    """Strip a ``DOMAIN\\`` prefix and lower-case the account name."""
+    value = (value or "").strip()
+    if "\\" in value:
+        value = value.rsplit("\\", 1)[1]
+    return value.lower()
+
+
 def _verified_user(headers: _Headers) -> User | None:
     """Build a user from the id token, and only if its signature checks out."""
     from ._jwt import verify_id_token
@@ -217,12 +238,18 @@ def _verified_user(headers: _Headers) -> User | None:
     name = str(claims.get("name") or claims.get("preferred_username") or "")
     email = str(claims.get("preferred_username") or claims.get("email") or "")
     roles = claims.get("roles") or []
+    shortname = ""
+    for key in _SHORTNAME_CLAIMS:
+        if claims.get(key):
+            shortname = _normalize_shortname(str(claims[key]))
+            break
     return User(
         id=str(claims.get("oid") or claims.get("sub") or ""),
         name=name,
         email=email if "@" in email else "",
         provider="aad",
         roles=tuple(str(r) for r in roles),
+        shortname=shortname,
     )
 
 
@@ -243,6 +270,7 @@ def _from_principal(encoded: str, headers: _Headers) -> User | None:
         provider=headers.get("x-ms-client-principal-idp", "")
         or str(claims.get("auth_typ", "")),
         roles=roles,
+        shortname=_normalize_shortname(_first(values, _SHORTNAME_CLAIMS)),
     )
 
 
@@ -286,7 +314,15 @@ def _dev_user() -> User:
     name = env("APPKIT_DEV_USER", "Dev User") or "Dev User"
     email = env("APPKIT_DEV_EMAIL", "dev.user@uzh.ch") or ""
     roles = tuple(r for r in (env("APPKIT_DEV_ROLES", "") or "").split(",") if r)
-    return User(id="dev-user", name=name, email=email, provider="dev", roles=roles)
+    shortname = env("APPKIT_DEV_SHORTNAME", "devuser") or ""
+    return User(
+        id="dev-user",
+        name=name,
+        email=email,
+        provider="dev",
+        roles=roles,
+        shortname=_normalize_shortname(shortname),
+    )
 
 
 class _Headers:

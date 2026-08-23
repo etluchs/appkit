@@ -88,6 +88,17 @@ _pool_lock = threading.Lock()
 _pool_instance = None
 
 
+def aad_password() -> str:
+    """Return a fresh AAD access token to use as the Postgres password.
+
+    Public because an app may legitimately bring its own driver or ORM (and so
+    its own connection pool) while still needing appkit's token source. Azure
+    Postgres tokens expire hourly, so fetch one per connection rather than
+    caching it — that is exactly what appkit's own pool does.
+    """
+    return _pg_password()
+
+
 def _pg_password() -> str:
     """The password used for a *new* Postgres connection.
 

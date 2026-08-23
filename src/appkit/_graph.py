@@ -99,6 +99,7 @@ def _send(
     *,
     params: dict[str, Any] | None = None,
     json: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> Any:
     """Perform one Graph request with retries; return the httpx response."""
     import httpx
@@ -110,7 +111,11 @@ def _send(
         for attempt in range(_MAX_ATTEMPTS):
             try:
                 response = client.request(
-                    method, url, params=params, json=json, headers=_headers()
+                    method,
+                    url,
+                    params=params,
+                    json=json,
+                    headers={**_headers(), **(headers or {})},
                 )
             except httpx.ConnectError as exc:
                 # The request never reached Graph, so repeating it is safe even
@@ -132,18 +137,32 @@ def _send(
     raise last_connect_error or RuntimeError("unreachable")
 
 
-def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+def get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """GET ``path`` (relative to the Graph base) and return parsed JSON."""
-    return _send("GET", _url(path), params=params).json()
+    return _send("GET", _url(path), params=params, headers=headers).json()
 
 
-def get_all(path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """GET a collection, following ``@odata.nextLink`` pagination."""
+def get_all(
+    path: str,
+    params: dict[str, Any] | None = None,
+    *,
+    headers: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """GET a collection, following ``@odata.nextLink`` pagination.
+
+    ``headers`` are sent on every page, so an advanced-query header such as
+    ``ConsistencyLevel: eventual`` survives pagination.
+    """
     items: list[dict[str, Any]] = []
     url: str | None = _url(path)
     query = params
     while url:
-        payload = _send("GET", url, params=query).json()
+        payload = _send("GET", url, params=query, headers=headers).json()
         items.extend(payload.get("value", []))
         url = payload.get("@odata.nextLink")
         query = None  # nextLink already carries the query
