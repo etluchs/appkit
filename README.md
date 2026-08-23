@@ -1,6 +1,6 @@
 # appkit
 
-The UZH internal-app toolkit. Four small modules, one job each — so that a
+The UZH internal-app toolkit. Small modules, one job each — so that a
 business app (and the AI assistant writing it) never has to touch Microsoft
 Graph, `httpx`, or `psycopg` by hand.
 
@@ -9,11 +9,12 @@ and ships with an **in-memory fake** for local development and tests. No
 secrets, no connection strings in code, no network in the test suite.
 
 ```python
-from appkit import sharepoint, mail, auth, db
+from appkit import sharepoint, mail, auth, db, directory
 
 rows = sharepoint.list_rows("Requests")            # Graph list items -> dicts
 mail.send_mail(to="team@uzh.ch", subject="Summary", body="...")   # Graph sendMail
 who = auth.user(request)                            # Easy Auth headers -> User
+people = directory.search_people("hartmann")        # Graph /users -> Person
 db.execute("insert into note (body) values (%s)", ["hi"])         # psycopg pool
 ```
 
@@ -112,6 +113,54 @@ mail.outbox()   # fake backend: inspect what was "sent"
 
 Sends via `POST /users/{sender}/sendMail`. The sender defaults to
 `APPKIT_MAIL_SENDER`.
+
+### `appkit.directory`
+
+```python
+from appkit import directory
+
+people = directory.search_people("hartmann, nicole")     # most relevant first
+staff  = directory.search_people("mei", employees_only=True)
+person = directory.person_by_shortname("nhartma")
+person = directory.person_by_id(user.id)                 # by Entra object id
+```
+
+Each `Person` carries `shortname`, `display_name`, `email`, `id` and
+`employee_type`. **`shortname` — Entra's `onPremisesSamAccountName` — is the
+identity.** Email is not: shared mailboxes mean two people can hold the same
+address, so an app that authorizes on email hands one of them the other's
+permissions. The fake directory contains such a pair on purpose, so that
+mistake fails a test rather than reaching production.
+
+Results are ranked here, not by the server: an exact match on a leading word
+beats a prefix, which beats a mid-word substring, and per-token tiers are
+summed so an entry matching every token prominently sorts first. Searching
+`sandra` therefore offers *Sandra Meier* before *Alessandra Rossi* without
+dropping the latter.
+
+One backend difference worth knowing: Graph's `$filter` offers `startsWith`,
+not arbitrary substring matching, so `azure` finds people by a **prefix** of
+their display name, given name, surname, mail or shortname — searching
+`essandra` will not find *Alessandra*. The fake matches substrings too, so it
+is the more forgiving of the two. Needs Graph `User.Read.All`.
+
+### `appkit.dns`
+
+```python
+from appkit import dns
+
+dns.cname_exists("myapp.azr.uzh.ch")     # True if the name is already taken
+dns.resolve("myapp.azr.uzh.ch", "A")     # the records, or []
+```
+
+For telling someone a hostname is taken before they ask for it. A name that
+does not exist is `False`; a lookup that could not be *completed* raises
+`DnsLookupError`, because reporting an unreachable resolver as "the name is
+free" is how two things end up with the same hostname.
+
+Unlike the other modules, `azure` here is not an Azure service — it is a real
+resolver (against `APPKIT_DNS_SERVER` when set). The fake answers from an
+in-memory set of names.
 
 ### `appkit.embeddings`
 
@@ -254,15 +303,21 @@ needed in `azure` mode:
 | `APPKIT_EMBEDDINGS_ENDPOINT` | embeddings | Azure OpenAI resource endpoint, e.g. `https://x.openai.azure.com`. Setting it turns embeddings on, on either backend. |
 | `APPKIT_EMBEDDINGS_DEPLOYMENT` | embeddings | Deployment name (default `text-embedding-3-small`). |
 | `APPKIT_EMBEDDINGS_API_VERSION` | embeddings | REST API version (default `2023-05-15`). |
+| `APPKIT_DIRECTORY_TOP` | directory | Graph page size (default 200). |
+| `APPKIT_DIRECTORY_EMPLOYEE_FILTER` | directory | Optional OData fragment applied when `employees_only=True`; without it the filtering happens in Python. |
+| `APPKIT_DNS_SERVER` | dns | Resolver to query. Defaults to the system resolver. |
+| `APPKIT_DNS_TIMEOUT` / `APPKIT_DNS_LIFETIME` | dns | Per-query and total lookup budget, in seconds (defaults 2 and 4). |
 | `APPKIT_DB_DSN` | db | Postgres connection string (no password — the token is injected). |
 | `APPKIT_DB_POOL_MAX` | db | Max pool size (default 10). |
 | `APPKIT_AUTH` | auth | `easyauth`, `verify`, `public` or `dev`. Required on an Azure app platform. |
 | `APPKIT_AUTH_TENANT_ID` / `APPKIT_AUTH_CLIENT_ID` / `APPKIT_AUTH_AUTHORITY` | auth | Only for `APPKIT_AUTH=verify`. |
-| `APPKIT_DEV_USER` / `APPKIT_DEV_EMAIL` / `APPKIT_DEV_ROLES` | auth | The local dev user (`APPKIT_AUTH=dev` only). |
+| `APPKIT_DEV_USER` / `APPKIT_DEV_EMAIL` / `APPKIT_DEV_ROLES` / `APPKIT_DEV_SHORTNAME` | auth | The local dev user (`APPKIT_AUTH=dev` only). |
+| `APPKIT_DIRECTORY_PROBE` / `APPKIT_DNS_PROBE` | doctor | A name fragment and a hostname the doctor should look up. Both checks skip unless set, so nothing reaches the network unasked. |
 
 The managed identity needs, at minimum: Graph `Sites.Read.All` (SharePoint),
-`Mail.Send` (mail), an AAD role on the Postgres server (db), and **Cognitive
-Services OpenAI User** on the Azure OpenAI resource (embeddings).
+`Mail.Send` (mail), `User.Read.All` (directory), an AAD role on the Postgres
+server (db), and **Cognitive Services OpenAI User** on the Azure OpenAI
+resource (embeddings).
 
 ## Errors
 

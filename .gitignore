@@ -16,3 +16,6 @@ uv.lock
 # addresses); keep them out of the repo and point APPKIT_SHAREPOINT_FAKE_DIR
 # at them instead. Tests build their own synthetic exports.
 sample.csv
+
+# IDEs
+.idea/

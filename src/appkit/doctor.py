@@ -334,6 +334,80 @@ def check_database() -> Check:
     return Check("database", PASS, version, [f"connected as {row.get('who', '?')}"])
 
 
+def check_directory() -> Check:
+    """One real people search, to prove User.Read.All is actually granted.
+
+    Opt-in: a directory search is a query about real people, so it happens only
+    when someone names a term to search for.
+    """
+    term = (config.env("APPKIT_DIRECTORY_PROBE") or "").strip()
+    if not term:
+        return Check(
+            "directory", SKIP, "APPKIT_DIRECTORY_PROBE not set",
+            hint="Set it to a name fragment to prove User.Read.All is granted "
+            "and that onPremisesSamAccountName comes back.",
+        )
+
+    from . import directory
+
+    try:
+        people = directory.search_people(term, limit=1)
+    except Exception as exc:
+        return Check(
+            "directory", FAIL, f"{type(exc).__name__}: {exc}",
+            hint="User.Read.All may be missing, or admin consent may not have "
+            "been granted for it.",
+        )
+    if not people:
+        return Check(
+            "directory", WARN, f"nobody matched {term!r}",
+            hint="The call succeeded, so the permission is fine -- but pick a "
+            "term that matches somebody to prove the fields come back.",
+        )
+    person = people[0]
+    detail = f"found {person.display_name}"
+    if not person.shortname:
+        return Check(
+            "directory", FAIL, f"{detail}, but with no shortname",
+            hint="onPremisesSamAccountName came back empty. Apps that authorize "
+            "per person key on it, and email is not a substitute.",
+        )
+    return Check("directory", PASS, detail, [f"shortname {person.shortname}"])
+
+
+def check_dns() -> Check:
+    """Resolve a name that must exist, so a broken resolver cannot look like
+    "the name is free".
+
+    Opt-in, so neither a test run nor a boot report reaches the network by
+    surprise.
+    """
+    probe = (config.env("APPKIT_DNS_PROBE") or "").strip()
+    if not probe:
+        return Check(
+            "dns", SKIP, "APPKIT_DNS_PROBE not set",
+            hint="Set it to a name that must resolve. A resolver that answers "
+            "nothing would report every name as free.",
+        )
+
+    from . import dns as dns_module  # noqa: F811
+
+    try:
+        records = dns_module.resolve(probe, "A")
+    except Exception as exc:
+        return Check(
+            "dns", FAIL, f"{type(exc).__name__}: {exc}",
+            hint="Check APPKIT_DNS_SERVER and that egress to it is allowed.",
+        )
+    if not records:
+        return Check(
+            "dns", FAIL, f"{probe} did not resolve",
+            hint="An availability check against this resolver would report every "
+            "name as free.",
+        )
+    return Check("dns", PASS, f"{probe} resolves", records[:2])
+
+
 #: What switches each integration on, and what it does. The startup report
 #: reads these; the contacting checks above use the same names.
 _INTEGRATIONS = (
@@ -445,6 +519,8 @@ def run(*, list_name: str | None = None, send_to: str | None = None) -> list[Che
     checks.append(check_sharepoint(list_name))
     checks.append(check_mail(send_to))
     checks.append(check_database())
+    checks.append(check_directory())
+    checks.append(check_dns())
     return checks
 
 

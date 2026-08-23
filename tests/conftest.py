@@ -56,7 +56,8 @@ def easy_auth_request():
             self.headers = headers
 
     def make(*, name="Amelia Stucki", email="amelia.stucki@uzh.ch",
-             oid="00000000-aaaa-bbbb-cccc-000000000001", roles=("approver",)):
+             oid="00000000-aaaa-bbbb-cccc-000000000001", roles=("approver",),
+             shortname="astucki"):
         principal = {
             "auth_typ": "aad",
             "claims": [
@@ -64,6 +65,7 @@ def easy_auth_request():
                 {"typ": "preferred_username", "val": email},
                 {"typ": "http://schemas.microsoft.com/identity/claims/objectidentifier",
                  "val": oid},
+                *([{"typ": "onpremisessamaccountname", "val": shortname}] if shortname else []),
                 *[{"typ": "roles", "val": r} for r in roles],
             ],
         }
